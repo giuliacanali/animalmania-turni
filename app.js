@@ -34,9 +34,13 @@ let schedule=JSON.parse(localStorage.getItem("am134_schedule")||"null")||emptySc
 let suppressAutoRender = false;
 
 function saveData(){
-  localStorage.setItem("am134_stores",JSON.stringify(stores));
-  localStorage.setItem("am134_employees",JSON.stringify(employees));
-  localStorage.setItem("am134_schedule",JSON.stringify(schedule));
+  try{
+    localStorage.setItem("am134_stores",JSON.stringify(stores));
+    localStorage.setItem("am134_employees",JSON.stringify(employees));
+    localStorage.setItem("am134_schedule",JSON.stringify(schedule));
+  }catch(err){
+    showNotice("ATTENZIONE: le modifiche non sono state salvate sul dispositivo (navigazione privata, spazio esaurito o impostazioni del browser). Chiudendo o ricaricando la pagina andranno perse.","warn",8000);
+  }
 }
 
 function slug(x){
@@ -1100,10 +1104,11 @@ function pauseVisibility(){
   pauseField.style.display=(empType.value==="6"||empType.value==="4-5")?"none":"grid";
 }
 
-function showNotice(m,t="ok"){
+function showNotice(m,t="ok",duration=3000){
   notice.textContent=m;
   notice.className=`notice show ${t}`;
-  setTimeout(()=>notice.classList.remove("show"),3000);
+  clearTimeout(showNotice._timer);
+  showNotice._timer=setTimeout(()=>notice.classList.remove("show"),duration);
 }
 
 
