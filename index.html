@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Animalmania Turni</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand"><img src="logo-animalmania.webp" alt="Animalmania"></div>
+    <button class="nav active" data-view="dashboard">Dashboard</button>
+    <button class="nav" data-view="turni">Turni</button>
+    <button class="nav" data-view="dipendenti">Dipendenti</button>
+    <button class="nav" data-view="negozi">Negozi</button>
+
+    <div class="sidebar-backup">
+      <button id="btnExportBackup" title="Scarica un file con negozi, dipendenti e turni attuali">Esporta backup</button>
+      <button id="btnImportBackup" title="Carica un file di backup esportato in precedenza">Importa backup</button>
+      <input type="file" id="importBackupInput" accept="application/json" hidden>
+    </div>
+  </aside>
+
+  <main>
+    <header>
+      <div>
+        <h1 id="title">Dashboard</h1>
+        <p id="subtitle">Panoramica della settimana.</p>
+      </div>
+      <button class="primary" id="btnGenerateAll">Genera proposta</button>
+    </header>
+
+    <section id="dashboard" class="view active">
+      <div class="cards" id="dashboardCards"></div>
+      <div class="grid2 dashboard-only-hours">
+        <article class="panel">
+          <h2>Ore dipendenti</h2>
+          <div id="hoursSummary"></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="turni" class="view">
+      <div class="toolbar">
+        <label>Negozio<select id="storeSelect"></select></label>
+        <button class="primary" id="btnGenerateSelected">Genera proposta</button>
+        <button id="btnSave">Salva</button>
+        <button id="btnClear">Svuota turni</button>
+      </div>
+
+      <div id="notice" class="notice"></div>
+
+      <article class="panel turni-issues-panel">
+        <h2>Avvisi turno</h2>
+        <div id="issues"></div>
+      </article>
+
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Dipendente</th>
+              <th>Lun</th><th>Mar</th><th>Mer</th><th>Gio</th><th>Ven</th><th>Sab</th><th>Dom</th>
+              <th>Ore</th>
+            </tr>
+          </thead>
+          <tbody id="weekBody"></tbody>
+        </table>
+      </div>
+
+      <h2>Vista negozio</h2>
+      <div class="days" id="storeDays"></div>
+    </section>
+
+    <section id="dipendenti" class="view">
+      <div class="grid2">
+        <article class="panel">
+          <h2>Aggiungi dipendente</h2>
+          <form id="employeeForm" class="form"><input type="hidden" id="editingEmployeeId">
+            <label>Nome e cognome<input id="empName" required></label>
+            <label>Negozio principale<select id="empPrimaryStore" required></select></label>
+            <label>Negozi secondari</label><div id="empSecondaryStores" class="checkbox-list"></div>
+            <label>Profilo dipendente<select id="empProfile" required></select></label>
+            <div id="profileSummary" class="profile-summary"></div>
+            <div id="standardProfileFields" class="form-section"><label>Ore settimanali massime<input id="empHours" type="number" min="1" value="40" required></label>
+            <label>Giorno di riposo<select id="empRest">
+              <option value="">Nessuno</option>
+              <option value="Lun">Lunedì</option>
+              <option value="Mar">Martedì</option>
+              <option value="Mer">Mercoledì</option>
+              <option value="Gio">Giovedì</option>
+              <option value="Ven">Venerdì</option>
+            </select></label>
+            <label>Tipo turno<select id="empType" required>
+              <option value="6">Solo 6 ore</option>
+              <option value="8" selected>Solo 8 ore</option>
+              <option value="6-8">6 o 8 ore</option>
+            </select></label>
+            <label id="pauseField">Durata pausa per turno da 8h
+              <input id="empPause" type="number" min="0" step="0.5" value="1">
+            </label>
+            </div>
+            <div id="fixedShiftFields" class="fixed-shift-fields"></div>
+            <button class="primary" id="employeeSubmitBtn">Salva dipendente</button>
+            <button type="button" id="employeeCancelBtn">Annulla modifica</button>
+          </form>
+        </article>
+
+        <article class="panel">
+          <h2>Profili disponibili</h2>
+          <div id="profileCards" class="profile-cards"></div>
+        </article>
+      </div>
+
+      <div class="grid2">
+        <article class="panel">
+          <h2>Dipendenti</h2>
+          <table class="simple">
+            <thead><tr><th>Nome</th><th>Profilo</th><th>Principale</th><th>Ore</th><th>Riposo</th><th>Turno</th><th></th></tr></thead>
+            <tbody id="employeeTable"></tbody>
+          </table>
+        </article>
+      </div>
+    </section>
+
+    <section id="negozi" class="view">
+      <div class="grid2">
+        <article class="panel">
+          <h2>Aggiungi negozio</h2>
+          <form id="storeForm" class="form"><input type="hidden" id="editingStoreId">
+            <label>Nome negozio<input id="storeName" required></label>
+
+            <label>Giorni apertura</label>
+            <div class="checks">
+              <label><input type="checkbox" name="openDays" value="Lun" checked> Lun</label>
+              <label><input type="checkbox" name="openDays" value="Mar" checked> Mar</label>
+              <label><input type="checkbox" name="openDays" value="Mer" checked> Mer</label>
+              <label><input type="checkbox" name="openDays" value="Gio" checked> Gio</label>
+              <label><input type="checkbox" name="openDays" value="Ven" checked> Ven</label>
+              <label><input type="checkbox" name="openDays" value="Sab" checked> Sab</label>
+              <label title="La domenica non viene mai inclusa nella generazione automatica: i turni vanno assegnati a mano dalla vista Turni."><input type="checkbox" name="openDays" value="Dom"> Dom</label>
+            </div>
+
+            <label>Tipo orario<select id="scheduleType">
+              <option value="continuous">Continuato</option>
+              <option value="split">Spezzato</option>
+            </select></label>
+
+            <div class="time-row">
+              <label>Da<input id="openStart1" type="time" value="09:00"></label>
+              <label>A<input id="openEnd1" type="time" value="20:00"></label>
+            </div>
+
+            <div class="time-row" id="splitRow">
+              <label>Da<input id="openStart2" type="time" value="16:00"></label>
+              <label>A<input id="openEnd2" type="time" value="20:00"></label>
+            </div>
+
+            <h3>Fasce speciali</h3>
+            <p>La copertura base è sempre 1 persona. Inserisci solo le fasce che richiedono più persone.</p>
+            <div id="specialBands"></div>
+            <button type="button" id="btnAddSpecialBand">+ Aggiungi fascia speciale</button>
+
+            <button class="primary" id="storeSubmitBtn">Salva negozio</button><button type="button" id="storeCancelBtn">Annulla modifica</button>
+          </form>
+        </article>
+
+        <div class="storecards" id="storeCards"></div>
+      </div>
+    </section>
+  </main>
+
+
+  <dialog id="editShiftDialog">
+    <form method="dialog" class="dialog-card" id="editShiftForm">
+      <h2>Modifica turno</h2>
+      <input type="hidden" id="editStoreId">
+      <input type="hidden" id="editEmployeeId">
+      <input type="hidden" id="editDay">
+
+      <label>Dipendente
+        <select id="editEmployeeSelect"></select>
+      </label>
+
+      <label>Giorno
+        <select id="editDaySelect">
+          <option value="Lun">Lunedì</option>
+          <option value="Mar">Martedì</option>
+          <option value="Mer">Mercoledì</option>
+          <option value="Gio">Giovedì</option>
+          <option value="Ven">Venerdì</option>
+          <option value="Sab">Sabato</option>
+          <option value="Dom">Domenica</option>
+        </select>
+      </label>
+
+      <label>Turno
+        <select id="editShiftSelect"></select>
+      </label>
+
+      <div class="dialog-actions">
+        <button type="button" id="btnDeleteShift" class="delete">Elimina turno</button>
+        <button type="button" id="btnCancelEdit">Annulla</button>
+        <button type="submit" class="primary">Salva</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
