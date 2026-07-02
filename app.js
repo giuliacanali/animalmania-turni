@@ -706,6 +706,17 @@ function findGenericAssignmentForBand(storeId,day,band,preferSpecial){
   return candidates[0];
 }
 
+function otherPresenceDuringPause(storeId,day,shift,excludeEmployeeId){
+  if(!shift.pauseStart || !shift.pauseEnd) return true;
+  const pause={start:shift.pauseStart,end:shift.pauseEnd};
+  return employees.some(e=>{
+    if(e.id===excludeEmployeeId) return false;
+    const sh=schedule[storeId]?.[e.id]?.[day];
+    if(!sh) return false;
+    return (sh.segments||[]).some(seg=>overlaps(seg,pause));
+  });
+}
+
 function genericScore(storeId,day,band,e,shift,preferSpecial){
   const store=stores.find(s=>s.id===storeId);
   const allBands=[
@@ -719,6 +730,12 @@ function genericScore(storeId,day,band,e,shift,preferSpecial){
     const current=coverage(storeId,day,b);
     if(current<b.min && shiftCovers(shift,b)) score += b.base ? 50 : 250;
   });
+
+  // Evita che la pausa di questo turno coincida con quella di un collega
+  // già assegnato, lasciando il negozio scoperto in quell'ora.
+  if(!otherPresenceDuringPause(storeId,day,shift,e.id)){
+    score -= 300;
+  }
 
   // I dipendenti normali devono arrivare alle ore contrattuali.
   // Gli extra invece non vengono riempiti a 30h: entrano solo sui buchi.
