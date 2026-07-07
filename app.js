@@ -348,8 +348,40 @@ function generateAllSchedules(){
   const selectedStore=storeSelect.value;
 
   suppressAutoRender=true;
-  stores.forEach(st=>generateStoreSchedule(st.id));
-  globalCrossStoreRepair();
+  ensureSchedule();
+
+  stores.forEach(st=>{
+    clearGeneratedScheduleForStore(st.id);
+    applyFixedShiftsForStore(st.id);
+  });
+
+  stores.forEach(st=>{
+    genDays.forEach(day=>{
+      if(!st.openDays.includes(day)) return;
+      const special=(st.specialBands||[]).map(b=>({...b,min:Number(b.min||2),base:false}));
+      special.forEach(band=>coverBandGeneric(st.id,day,band,true));
+    });
+  });
+
+  stores.forEach(st=>{
+    genDays.forEach(day=>{
+      if(!st.openDays.includes(day)) return;
+      const baseBands=st.sessions.flatMap(splitSessionIntoSlots);
+      baseBands.forEach(band=>coverBandGeneric(st.id,day,band,false));
+    });
+  });
+
+  // Completamento ore cross-negozio: principale prima, secondario solo
+  // quando il principale non ha più slot validi per quel giorno.
+  completeMandatoryHoursGlobal();
+
+  employees
+    .filter(e=>!e.fixedShifts && employeeTotal(e.id)>maxWeeklyHours(e))
+    .forEach(e=>reduceEmployeeHoursGlobal(e));
+
+  stores.forEach(st=>repairAllCoverageForStore(st.id));
+
+  saveData();
   suppressAutoRender=false;
 
   renderAll();
@@ -674,7 +706,6 @@ function findGenericAssignmentForBand(storeId,day,band,preferSpecial){
 
   getStoreWorkers(storeId)
     .filter(e=>!e.fixedShifts)
-    .filter(e=>!e.isExtra) // Extra: sempre visibili ma mai generati automaticamente
     .filter(e=>canWorkDay(e,day))
     .forEach(e=>{
       const existing=schedule[storeId]?.[e.id]?.[day];
@@ -783,7 +814,7 @@ function replacementPreservesCriticalCoverage(storeId,store,employeeId,day,newSh
 
 function completeMandatoryHoursForStore(storeId){
   const store=stores.find(s=>s.id===storeId);
-  const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts && !e.isExtra);
+  const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts);
   const ordered=workers.slice().sort((a,b)=>workerPriority(a,storeId)-workerPriority(b,storeId));
 
   ordered.forEach(e=>{
@@ -858,6 +889,99 @@ function replacementPreservesAllCoverage(storeId,store,employeeId,day,newShift){
   return ok;
 }
 
+function eligibleStoresOrdered(e){
+  const ids=[e.primaryStoreId, ...(e.secondaryStoreIds||[])];
+  return ids.map(id=>stores.find(s=>s.id===id)).filter(Boolean);
+}
+
+function findBestHourCompletionAcrossStores(e){
+  const missing=employeeMissingHours(e);
+  const candidates=[];
+
+  eligibleStoresOrdered(e).forEach((store,storeRank)=>{
+    genDays.forEach(day=>{
+      if(!store.openDays.includes(day)) return;
+      if(!canWorkDay(e,day)) return;
+      if(schedule[store.id]?.[e.id]?.[day]) return;
+
+      shiftOptionsForStore(store,e)
+        .filter(opt=>opt.workedHours<=missing)
+        .filter(opt=>canAssignShiftStrict(store.id,e,day,opt))
+        .forEach(opt=>candidates.push({
+          storeId:store.id,
+          storeRank,
+          day,
+          shift:opt,
+          score:genericScore(store.id,day,{start:opt.segments[0].start,end:opt.segments[opt.segments.length-1].end,min:1,base:true},e,opt,false)
+        }));
+    });
+  });
+
+  if(!candidates.length) return null;
+
+  // Negozio principale sempre prima: il secondario entra in gioco solo
+  // quando per quel giorno il principale non ha uno slot valido (riposo,
+  // negozio chiuso, giornata già coperta da un collega, ecc.).
+  candidates.sort((a,b)=>{
+    const aExact=a.shift.workedHours===missing?1:0;
+    const bExact=b.shift.workedHours===missing?1:0;
+    return a.storeRank-b.storeRank || bExact-aExact || b.score-a.score || b.shift.workedHours-a.shift.workedHours || (Math.random()-0.5);
+  });
+
+  return candidates[0];
+}
+
+function completeMandatoryHoursGlobal(){
+  // Prima i dipendenti normali, poi gli Extra: così un Extra non "ruba"
+  // uno slot di cui un dipendente normale ha davvero bisogno per arrivare
+  // alle sue ore contrattuali.
+  const workers=employees.filter(e=>!e.fixedShifts).slice().sort((a,b)=>(a.isExtra?1:0)-(b.isExtra?1:0));
+
+  workers.forEach(e=>{
+    let guard=0;
+    while(employeeTotal(e.id)<maxWeeklyHours(e) && guard<250){
+      guard++;
+      const assignment=findBestHourCompletionAcrossStores(e);
+      if(!assignment) break;
+      schedule[assignment.storeId][e.id][assignment.day]=assignment.shift;
+    }
+  });
+}
+
+function reduceOnceAcrossStores(e){
+  const overflow=employeeTotal(e.id)-maxWeeklyHours(e);
+  const candidates=[];
+
+  eligibleStoresOrdered(e).forEach((store,storeRank)=>{
+    genDays.forEach(day=>{
+      const current=schedule[store.id]?.[e.id]?.[day];
+      if(!current) return;
+
+      shiftOptionsForStore(store,e)
+        .filter(opt=>opt.workedHours<current.workedHours)
+        .filter(opt=>current.workedHours-opt.workedHours<=overflow)
+        .filter(opt=>replacementPreservesAllCoverage(store.id,store,e.id,day,opt))
+        .forEach(opt=>candidates.push({storeId:store.id,storeRank,day,shift:opt,saving:current.workedHours-opt.workedHours}));
+    });
+  });
+
+  if(!candidates.length) return false;
+
+  // Riduci prima nei negozi secondari, per proteggere la presenza nel principale.
+  candidates.sort((a,b)=>b.storeRank-a.storeRank || b.saving-a.saving);
+  const best=candidates[0];
+  schedule[best.storeId][e.id][best.day]=best.shift;
+  return true;
+}
+
+function reduceEmployeeHoursGlobal(e){
+  let guard=0;
+  while(employeeTotal(e.id)>maxWeeklyHours(e) && guard<120){
+    guard++;
+    if(!reduceOnceAcrossStores(e)) break;
+  }
+}
+
 function repairAllCoverageForStore(storeId){
   const store=stores.find(s=>s.id===storeId);
   genDays.forEach(day=>{
@@ -867,14 +991,6 @@ function repairAllCoverageForStore(storeId){
       ...store.sessions.flatMap(splitSessionIntoSlots)
     ];
     bands.forEach(b=>coverBandGeneric(storeId,day,b,!b.base));
-  });
-}
-
-function globalCrossStoreRepair(){
-  stores.forEach(st=>{
-    repairAllCoverageForStore(st.id);
-    completeMandatoryHoursForStore(st.id);
-    repairAllCoverageForStore(st.id);
   });
 }
 
