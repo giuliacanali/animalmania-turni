@@ -78,8 +78,9 @@
           <h2>Aggiungi dipendente</h2>
           <form id="employeeForm" class="form"><input type="hidden" id="editingEmployeeId">
             <label>Nome e cognome<input id="empName" required></label>
-            <label>Negozio principale<select id="empPrimaryStore" required></select></label>
+            <label>Negozio principale<select id="empPrimaryStore"></select></label>
             <label>Negozi secondari</label><div id="empSecondaryStores" class="checkbox-list"></div>
+            <label class="check-row"><input type="checkbox" id="empManualOnly"> Turni solo manuali (non generare in automatico, es. direttore)</label>
             <label>Profilo dipendente<select id="empProfile" required></select></label>
             <div id="profileSummary" class="profile-summary"></div>
             <div id="standardProfileFields" class="form-section"><label>Ore settimanali massime<input id="empHours" type="number" min="1" value="40" required></label>

@@ -161,7 +161,10 @@ function canAssignShiftStrict(storeId,e,day,shift){
   return employeeTotal(e.id)+shift.workedHours<=maxWeeklyHours(e);
 }
 function clearGeneratedScheduleForStore(storeId){
-  getStoreWorkers(storeId).forEach(e=>{
+  // I dipendenti "solo manuale" non vengono mai toccati dalla generazione:
+  // i loro turni restano quelli impostati a mano finché non li si cambia
+  // dall'editor.
+  getStoreWorkers(storeId).filter(e=>!e.manual).forEach(e=>{
     schedule[storeId]=schedule[storeId]||{};
     schedule[storeId][e.id]=Object.fromEntries(days.map(d=>[d,null]));
   });
@@ -230,6 +233,35 @@ function normalizeEightHourShiftWithPause(segments,pauseHours){
     pauseStart:toTime(pauseStart),
     pauseEnd:toTime(pauseEnd)
   };
+}
+
+// Turno continuato da 8h: la pausa non è fissa a metà, ma può cadere in
+// più posizioni (almeno 1h di lavoro prima e dopo). Così la generazione e
+// l'editor manuale possono scegliere l'orario di pausa che NON lascia buchi
+// nel negozio (es. mettere la pausa quando c'è già un collega presente).
+function buildEightHourContinuousVariants(startMin,pauseHours){
+  const variants=[];
+  const presenceEnd=startMin+(8+pauseHours)*60;
+
+  for(let workBefore=1;workBefore<=7;workBefore++){
+    const pauseStart=startMin+workBefore*60;
+    const pauseEnd=pauseStart+pauseHours*60;
+    if(pauseEnd>=presenceEnd) break;
+
+    const first={start:toTime(startMin),end:toTime(pauseStart)};
+    const second={start:toTime(pauseEnd),end:toTime(presenceEnd)};
+
+    variants.push({
+      segments:[first,second],
+      time:toTime(startMin)+"-"+toTime(presenceEnd),
+      workedHours:8,
+      pause:toTime(pauseStart)+"-"+toTime(pauseEnd),
+      pauseStart:toTime(pauseStart),
+      pauseEnd:toTime(pauseEnd)
+    });
+  }
+
+  return variants;
 }
 
 function shiftCovers(sh,band){
@@ -304,6 +336,35 @@ function shiftOptionsForStore(store,e){
   });
 }
 
+// Opzioni per l'editor manuale: come shiftOptionsForStore, ma ogni turno
+// continuato da 8h viene espanso in tutte le posizioni di pausa possibili,
+// così chi assegna a mano può scegliere l'orario di pausa che serve.
+function shiftOptionsForEditor(store,e){
+  const base=shiftOptionsForStore(store,e);
+  const expanded=[];
+
+  base.forEach(o=>{
+    const isContinuousEight = o.workedHours===8 && o.pauseStart && o.pauseEnd && (o.segments||[]).length===2;
+    if(isContinuousEight){
+      const startMin=toMin(o.segments[0].start);
+      const pauseHours=(toMin(o.pauseEnd)-toMin(o.pauseStart))/60;
+      buildEightHourContinuousVariants(startMin,pauseHours)
+        .filter(v=>isShiftInsideStore(v,store))
+        .forEach(v=>expanded.push(v));
+    }else{
+      expanded.push(o);
+    }
+  });
+
+  const seen=new Set();
+  return expanded.filter(o=>{
+    const key=o.time+"|"+o.pause+"|"+o.workedHours;
+    if(seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function isShiftInsideStore(shift,store){
   if(!shift)return false;
   return (shift.segments||[]).every(seg=>{
@@ -334,6 +395,8 @@ function generateStoreSchedule(storeId){
   completeMandatoryHoursForStore(storeId);
   repairAllCoverageForStore(storeId);
   completeMandatoryHoursForStore(storeId);
+  minimizeResidualGapsForStore(storeId);
+  optimizePausePositionsForStore(storeId);
 
   saveData();
   if(!suppressAutoRender){
@@ -376,10 +439,12 @@ function generateAllSchedules(){
   completeMandatoryHoursGlobal();
 
   employees
-    .filter(e=>!e.fixedShifts && employeeTotal(e.id)>maxWeeklyHours(e))
+    .filter(e=>!e.fixedShifts && !e.manual && employeeTotal(e.id)>maxWeeklyHours(e))
     .forEach(e=>reduceEmployeeHoursGlobal(e));
 
   stores.forEach(st=>repairAllCoverageForStore(st.id));
+  stores.forEach(st=>minimizeResidualGapsForStore(st.id));
+  stores.forEach(st=>optimizePausePositionsForStore(st.id));
 
   saveData();
   suppressAutoRender=false;
@@ -504,7 +569,7 @@ function renderOptions(){
 
   let opts=stores.map(s=>`<option value="${s.id}">${s.name}</option>`).join("");
   storeSelect.innerHTML=opts;
-  empPrimaryStore.innerHTML=opts;
+  empPrimaryStore.innerHTML=`<option value="">Nessuno (gira su più negozi, es. direttore)</option>`+opts;
 
   if(typeof empProfile!=="undefined"){
     empProfile.innerHTML=employeeProfiles.map(p=>`<option value="${p.id}">${p.name}</option>`).join("");
@@ -587,6 +652,7 @@ function editEmployee(id){
   empRest.value=e.rest||"";
   empType.value=e.type;
   empPause.value=e.pauseHours||0;
+  empManualOnly.checked=!!e.manual;
   renderSecondaryStoreChecks(e.secondaryStoreIds||[]);
   if(e.fixedShifts){
     buildFixedShiftFields(e.fixedSchedule||{});
@@ -601,12 +667,12 @@ function renderEmployees(){
   if(!table) return;
 
   table.innerHTML=employees.map(e=>{
-    const primary=stores.find(s=>s.id===e.primaryStoreId)?.name||"-";
+    const primary=stores.find(s=>s.id===e.primaryStoreId)?.name||"Nessuno";
     const profile=getProfile(e.profileId);
     const label=shiftTypeLabel(e.type);
     return `<tr>
       <td><strong>${e.name}</strong></td>
-      <td>${profile.name}${e.isExtra?' · Extra':''}</td>
+      <td>${profile.name}${e.isExtra?' · Extra':''}${e.manual?' · Manuale':''}</td>
       <td>${primary}</td>
       <td>${e.weeklyHours}</td>
       <td>${e.rest||"Nessuno"}</td>
@@ -705,7 +771,7 @@ function findGenericAssignmentForBand(storeId,day,band,preferSpecial){
   const candidates=[];
 
   getStoreWorkers(storeId)
-    .filter(e=>!e.fixedShifts)
+    .filter(e=>!e.fixedShifts && !e.manual)
     .filter(e=>canWorkDay(e,day))
     .forEach(e=>{
       const existing=schedule[storeId]?.[e.id]?.[day];
@@ -814,7 +880,7 @@ function replacementPreservesCriticalCoverage(storeId,store,employeeId,day,newSh
 
 function completeMandatoryHoursForStore(storeId){
   const store=stores.find(s=>s.id===storeId);
-  const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts);
+  const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts && !e.manual);
   const ordered=workers.slice().sort((a,b)=>workerPriority(a,storeId)-workerPriority(b,storeId));
 
   ordered.forEach(e=>{
@@ -890,15 +956,36 @@ function replacementPreservesAllCoverage(storeId,store,employeeId,day,newShift){
 }
 
 function eligibleStoresOrdered(e){
+  // Senza negozio principale (es. un direttore che gira su più negozi)
+  // nessun negozio ha la precedenza: stesso rango ovunque, decide solo
+  // dove c'è davvero bisogno.
+  if(!e.primaryStoreId){
+    return (e.secondaryStoreIds||[])
+      .map(id=>stores.find(s=>s.id===id))
+      .filter(Boolean)
+      .map(store=>({store,rank:0}));
+  }
+
   const ids=[e.primaryStoreId, ...(e.secondaryStoreIds||[])];
-  return ids.map(id=>stores.find(s=>s.id===id)).filter(Boolean);
+  return ids
+    .map((id,i)=>({store:stores.find(s=>s.id===id),rank:i===0?0:1}))
+    .filter(x=>x.store);
+}
+
+function shiftFillsAnyGap(storeId,day,shift){
+  const store=stores.find(s=>s.id===storeId);
+  const bands=[
+    ...(store.specialBands||[]).map(b=>({...b,min:Number(b.min||2),base:false})),
+    ...store.sessions.flatMap(splitSessionIntoSlots)
+  ];
+  return bands.some(b=>coverage(storeId,day,b)<b.min && shiftCovers(shift,b));
 }
 
 function findBestHourCompletionAcrossStores(e){
   const missing=employeeMissingHours(e);
   const candidates=[];
 
-  eligibleStoresOrdered(e).forEach((store,storeRank)=>{
+  eligibleStoresOrdered(e).forEach(({store,rank:storeRank})=>{
     genDays.forEach(day=>{
       if(!store.openDays.includes(day)) return;
       if(!canWorkDay(e,day)) return;
@@ -912,6 +999,7 @@ function findBestHourCompletionAcrossStores(e){
           storeRank,
           day,
           shift:opt,
+          fillsGap:shiftFillsAnyGap(store.id,day,opt),
           score:genericScore(store.id,day,{start:opt.segments[0].start,end:opt.segments[opt.segments.length-1].end,min:1,base:true},e,opt,false)
         }));
     });
@@ -919,13 +1007,14 @@ function findBestHourCompletionAcrossStores(e){
 
   if(!candidates.length) return null;
 
-  // Negozio principale sempre prima: il secondario entra in gioco solo
-  // quando per quel giorno il principale non ha uno slot valido (riposo,
-  // negozio chiuso, giornata già coperta da un collega, ecc.).
+  // Un buco reale da coprire vince sempre, in qualsiasi negozio si trovi:
+  // altrimenti (nessun buco da nessuna parte, si tratta solo di completare
+  // ore contrattuali) si preferisce il negozio principale, poi i secondari
+  // nell'ordine in cui sono elencati.
   candidates.sort((a,b)=>{
     const aExact=a.shift.workedHours===missing?1:0;
     const bExact=b.shift.workedHours===missing?1:0;
-    return a.storeRank-b.storeRank || bExact-aExact || b.score-a.score || b.shift.workedHours-a.shift.workedHours || (Math.random()-0.5);
+    return (b.fillsGap-a.fillsGap) || (a.storeRank-b.storeRank) || bExact-aExact || b.score-a.score || b.shift.workedHours-a.shift.workedHours || (Math.random()-0.5);
   });
 
   return candidates[0];
@@ -935,7 +1024,7 @@ function completeMandatoryHoursGlobal(){
   // Prima i dipendenti normali, poi gli Extra: così un Extra non "ruba"
   // uno slot di cui un dipendente normale ha davvero bisogno per arrivare
   // alle sue ore contrattuali.
-  const workers=employees.filter(e=>!e.fixedShifts).slice().sort((a,b)=>(a.isExtra?1:0)-(b.isExtra?1:0));
+  const workers=employees.filter(e=>!e.fixedShifts && !e.manual).slice().sort((a,b)=>(a.isExtra?1:0)-(b.isExtra?1:0));
 
   workers.forEach(e=>{
     let guard=0;
@@ -952,7 +1041,7 @@ function reduceOnceAcrossStores(e){
   const overflow=employeeTotal(e.id)-maxWeeklyHours(e);
   const candidates=[];
 
-  eligibleStoresOrdered(e).forEach((store,storeRank)=>{
+  eligibleStoresOrdered(e).forEach(({store,rank:storeRank})=>{
     genDays.forEach(day=>{
       const current=schedule[store.id]?.[e.id]?.[day];
       if(!current) return;
@@ -991,6 +1080,103 @@ function repairAllCoverageForStore(storeId){
       ...store.sessions.flatMap(splitSessionIntoSlots)
     ];
     bands.forEach(b=>coverBandGeneric(storeId,day,b,!b.base));
+  });
+}
+
+function totalUncoveredMinutesForDay(storeId,day){
+  const store=stores.find(s=>s.id===storeId);
+  const bands=[
+    ...(store.specialBands||[]).map(b=>({...b,min:Number(b.min||2),base:false})),
+    ...store.sessions.flatMap(splitSessionIntoSlots)
+  ];
+  return bands.reduce((total,b)=>{
+    const deficit=Math.max(0,b.min-coverage(storeId,day,b));
+    return total+deficit*(toMin(b.end)-toMin(b.start));
+  },0);
+}
+
+// Il "repair" normale accetta solo scambi che non peggiorano nessun'altra
+// fascia. Quando restano buchi che nessuno scambio sicuro può chiudere del
+// tutto (es. un solo aiuto disponibile per coprire due estremi opposti
+// della giornata), qui si accetta anche uno scambio che sposta il buco
+// altrove, purché il totale di minuti scoperti nella giornata diminuisca.
+function minimizeResidualGapsForStore(storeId){
+  const store=stores.find(s=>s.id===storeId);
+  genDays.forEach(day=>{
+    if(!store.openDays.includes(day)) return;
+
+    let guard=0;
+    let improved=true;
+    while(improved && guard<40){
+      guard++;
+      improved=false;
+      const before=totalUncoveredMinutesForDay(storeId,day);
+      if(before===0) break;
+
+      const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts && !e.manual && schedule[storeId]?.[e.id]?.[day]);
+
+      for(const e of workers){
+        const current=schedule[storeId][e.id][day];
+        const options=shiftOptionsForStore(store,e).filter(opt=>{
+          const delta=opt.workedHours-current.workedHours;
+          return employeeTotal(e.id)+delta<=maxWeeklyHours(e);
+        });
+
+        let swapped=false;
+        for(const opt of options){
+          schedule[storeId][e.id][day]=opt;
+          const after=totalUncoveredMinutesForDay(storeId,day);
+          if(after<before){
+            improved=true;
+            swapped=true;
+            break;
+          }
+          schedule[storeId][e.id][day]=current;
+        }
+        if(swapped) break;
+      }
+    }
+  });
+}
+
+// Ottimizza SOLO la posizione della pausa dei turni da 8h già assegnati:
+// stessa finestra di presenza e stesse ore, ma la pausa viene spostata
+// nell'orario che lascia il negozio meno scoperto (es. quando c'è un
+// collega presente). Non cambia chi lavora né quando entra/esce.
+function optimizePausePositionsForStore(storeId){
+  const store=stores.find(s=>s.id===storeId);
+  genDays.forEach(day=>{
+    if(!store.openDays.includes(day)) return;
+
+    let improved=true;
+    let guard=0;
+    while(improved && guard<40){
+      guard++;
+      improved=false;
+      const before=totalUncoveredMinutesForDay(storeId,day);
+      if(before===0) break;
+
+      const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts && !e.manual);
+      for(const e of workers){
+        const cur=schedule[storeId]?.[e.id]?.[day];
+        if(!cur || cur.workedHours!==8 || !cur.pauseStart || !cur.pauseEnd) continue;
+        if((cur.segments||[]).length!==2) continue;
+
+        const startMin=toMin(cur.segments[0].start);
+        const pauseHours=(toMin(cur.pauseEnd)-toMin(cur.pauseStart))/60;
+        const variants=buildEightHourContinuousVariants(startMin,pauseHours)
+          .filter(v=>isShiftInsideStore(v,store) && v.pauseStart!==cur.pauseStart);
+
+        let swapped=false;
+        for(const v of variants){
+          schedule[storeId][e.id][day]=v;
+          const after=totalUncoveredMinutesForDay(storeId,day);
+          if(after<before){ improved=true; swapped=true; break; }
+          schedule[storeId][e.id][day]=cur;
+        }
+        if(swapped) break;
+      }
+    }
   });
 }
 
@@ -1126,6 +1312,10 @@ function addEmployee(e){
 
   let fixedShifts={};
   if(profile.id==="turno_fisso"){
+    if(!empPrimaryStore.value){
+      showNotice("Il turno fisso richiede un negozio principale.","warn");
+      return;
+    }
     try{
       fixedShifts=collectFixedShifts();
     }catch(err){
@@ -1158,7 +1348,8 @@ function addEmployee(e){
     profileId:profile.id,
     isExtra:!!profile.isExtra,
     fixedShifts:profile.id==="turno_fisso",
-    fixedSchedule:fixedShifts
+    fixedSchedule:fixedShifts,
+    manual:profile.id==="turno_fisso"?false:empManualOnly.checked
   };
 
   const idx=employees.findIndex(x=>x.id===id);
@@ -1248,7 +1439,8 @@ function openShiftEditor(storeId, employeeId, day){
 
   const current=schedule[storeId]?.[employeeId]?.[day];
   if(current){
-    const match=[...editShiftSelect.options].find(o=>o.dataset.time===current.time);
+    const match=[...editShiftSelect.options].find(o=>o.dataset.time===current.time && o.dataset.pause===current.pause)
+      || [...editShiftSelect.options].find(o=>o.dataset.time===current.time);
     if(match) editShiftSelect.value=match.value;
   }
 
@@ -1262,10 +1454,10 @@ function refreshEditShiftOptions(){
   const employee=employees.find(e=>e.id===employeeId);
   if(!store||!employee) return;
 
-  const opts=shiftOptionsForStore(store,employee);
+  const opts=shiftOptionsForEditor(store,employee);
   editShiftSelect.innerHTML=`<option value="">— Nessun turno —</option>`+opts.map((opt,i)=>{
     const pause=(opt.pause&&opt.pause!=="No")?` · Pausa ${opt.pause}`:"";
-    return `<option value="${i}" data-time="${opt.time}">${opt.time}${pause} · ${opt.workedHours}h</option>`;
+    return `<option value="${i}" data-time="${opt.time}" data-pause="${opt.pause}">${opt.time}${pause} · ${opt.workedHours}h</option>`;
   }).join("");
 }
 
@@ -1294,7 +1486,7 @@ function saveManualShift(event){
   if(shiftIndex===""){
     schedule[storeId][newEmployeeId][day]=null;
   }else{
-    const option=shiftOptionsForStore(store,employee)[Number(shiftIndex)];
+    const option=shiftOptionsForEditor(store,employee)[Number(shiftIndex)];
     if(!option){
       showNotice("Turno non valido.","warn");
       editShiftDialog.close();
