@@ -185,3 +185,133 @@ table.dash-week td { text-align: center; }
 .dash-legend .dot.ok { background: #cdeccf; }
 .dash-legend .dot.gap { background: #f6c9bd; }
 .dash-legend .dot.closed { background: #e7e1da; }
+
+/* V17 vista dipendente "Il mio turno" */
+.emp-summary {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 16px;
+  box-shadow: var(--shadow);
+  margin-bottom: 14px;
+}
+.emp-summary:empty { display: none; }
+.emp-summary-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.emp-summary-head strong { font-size: 18px; }
+.emp-summary-stores { display: flex; flex-wrap: wrap; gap: 4px; }
+#empViewDays .day .person { border-left-color: var(--orange); }
+#empViewDays .day .person strong { display: block; color: var(--orange); }
+#empViewDays .day .person .note { margin-top: 2px; }
+
+/* V18 UX mobile */
+/* Il pulsante hamburger esiste solo su mobile. */
+.nav-toggle { display: none; }
+
+@media (max-width: 900px) {
+  main { padding: 16px; }
+
+  /* Sidebar: barra in alto con logo + hamburger; le voci compaiono come
+     menù a tendina solo quando si apre, senza spingere giù il contenuto. */
+  .sidebar {
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 10px;
+    padding: 10px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+    z-index: 30;
+  }
+  .sidebar .brand { margin: 0; padding: 5px 8px; flex: 0 0 auto; }
+  .sidebar .brand img { width: 84px; }
+
+  .nav-toggle {
+    display: block;
+    margin-left: auto;
+    flex: 0 0 auto;
+    font-size: 15px;
+    padding: 10px 16px;
+  }
+
+  /* Voci e backup: nascoste finché il menù è chiuso. */
+  .sidebar .nav,
+  .sidebar-backup { display: none; flex: 1 1 100%; }
+  .sidebar .nav { text-align: left; }
+  .sidebar-backup {
+    margin: 0;
+    padding: 8px 0 2px;
+    border-top: 1px solid var(--line);
+    flex-direction: row;
+    gap: 8px;
+  }
+  .sidebar-backup button { flex: 1; }
+
+  .sidebar.open .nav { display: block; }
+  .sidebar.open .sidebar-backup { display: flex; }
+
+  /* Header: titolo e pulsante impilati, pulsante a tutta larghezza. */
+  header { gap: 12px; }
+  header .primary { width: 100%; }
+
+  /* Barra settimana: etichetta a riga intera, controlli sotto. */
+  .weeknav { gap: 8px; }
+  .weeknav .week-label { min-width: 0; flex: 1 1 100%; order: -1; }
+  .week-jump { width: 100%; justify-content: space-between; }
+  .weeknav #btnExportPng { margin-left: 0; }
+
+  .toolbar { gap: 8px; }
+  .toolbar > * { flex: 1 1 auto; }
+
+  /* Tap target più comodi. */
+  button, select, input { padding: 10px 12px; font-size: 13px; min-height: 40px; }
+
+  /* Card giorno impilate invece dello scroll orizzontale a 7 colonne. */
+  .days { grid-template-columns: 1fr 1fr; overflow-x: visible; }
+  .day { min-height: 0; }
+}
+
+@media (max-width: 560px) {
+  main { padding: 12px; }
+  .days { grid-template-columns: 1fr; }
+  .cards { grid-template-columns: 1fr; }
+  .weeknav button { flex: 1 1 auto; }
+  .weeknav .week-label { font-size: 14px; }
+  .emp-summary-head { flex-wrap: wrap; gap: 8px; }
+}
+
+/* V19 ferie / permessi / malattia */
+.leave {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-weight: 900;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.leave-ferie { background: #e7f0ff; color: #1f5fbf; }
+.leave-permesso { background: #fff3d6; color: #9b6500; }
+.leave-malattia { background: #ffe3dd; color: var(--danger); }
+.leave-tag { color: #fff; }
+.leave-tag.leave-ferie { background: #2f6fd0; }
+.leave-tag.leave-permesso { background: #b07d00; }
+.leave-tag.leave-malattia { background: var(--danger); }
+
+.leave-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.leave-row:last-child { border-bottom: 0; }
+.leave-info { flex: 1; display: grid; gap: 2px; }
+.leave-info span { color: var(--muted); font-size: 12px; }
+#leaveHoursRow { display: none; }

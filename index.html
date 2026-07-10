@@ -4,14 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Animalmania Turni</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=20">
 </head>
 <body>
   <aside class="sidebar">
     <div class="brand"><img src="logo-animalmania.webp" alt="Animalmania"></div>
+    <button class="nav-toggle" id="navToggle" aria-label="Apri menu">☰ Menu</button>
     <button class="nav active" data-view="dashboard">Dashboard</button>
     <button class="nav" data-view="turni">Turni</button>
+    <button class="nav" data-view="mioturno">Il mio turno</button>
     <button class="nav" data-view="dipendenti">Dipendenti</button>
+    <button class="nav" data-view="ferie">Ferie</button>
     <button class="nav" data-view="negozi">Negozi</button>
 
     <div class="sidebar-backup">
@@ -104,6 +107,24 @@
       <div class="days" id="storeDays"></div>
     </section>
 
+    <section id="mioturno" class="view">
+      <div class="weeknav">
+        <button id="btnEmpPrevWeek" title="Settimana precedente">◀</button>
+        <span id="empViewLabel" class="week-label"></span>
+        <button id="btnEmpNextWeek" title="Settimana successiva">▶</button>
+        <button id="btnEmpToday">Oggi</button>
+        <label class="week-jump">Vai a<input type="date" id="empViewJump"></label>
+      </div>
+
+      <div class="toolbar">
+        <label>Chi sei?<select id="empViewSelect"></select></label>
+      </div>
+
+      <div id="empViewSummary" class="emp-summary"></div>
+
+      <div class="days" id="empViewDays"></div>
+    </section>
+
     <section id="dipendenti" class="view">
       <div class="grid2">
         <article class="panel">
@@ -154,6 +175,47 @@
           </table>
         </article>
       </div>
+    </section>
+
+    <section id="ferie" class="view">
+      <div class="grid2">
+        <article class="panel">
+          <h2>Aggiungi assenza</h2>
+          <form id="leaveForm" class="form">
+            <label>Dipendente<select id="leaveEmp" required></select></label>
+            <label>Tipo<select id="leaveType">
+              <option value="ferie">Ferie (giornate intere)</option>
+              <option value="permesso">Permesso (a ore)</option>
+              <option value="malattia">Malattia (giornate intere)</option>
+            </select></label>
+            <div class="time-row">
+              <label>Dal<input type="date" id="leaveStart" required></label>
+              <label id="leaveEndField">Al<input type="date" id="leaveEnd"></label>
+            </div>
+            <div class="time-row" id="leaveHoursRow">
+              <label>Dalle<input type="time" id="leaveFrom" value="14:00"></label>
+              <label>Alle<input type="time" id="leaveTo" value="18:00"></label>
+            </div>
+            <label>Nota (facoltativa)<input id="leaveNote" placeholder="es. visita medica"></label>
+            <button class="primary" id="leaveSubmit">Aggiungi assenza</button>
+          </form>
+        </article>
+
+        <article class="panel">
+          <h2>Assenze registrate</h2>
+          <div id="leaveList"></div>
+        </article>
+      </div>
+
+      <article class="panel">
+        <h2>Riepilogo assenze per dipendente</h2>
+        <div class="tablewrap">
+          <table class="simple">
+            <thead><tr><th>Dipendente</th><th>Ferie</th><th>Permessi</th><th>Malattia</th></tr></thead>
+            <tbody id="leaveStatsBody"></tbody>
+          </table>
+        </div>
+      </article>
     </section>
 
     <section id="negozi" class="view">
@@ -239,6 +301,6 @@
     </form>
   </dialog>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=20"></script>
 </body>
 </html>

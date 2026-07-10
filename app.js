@@ -204,6 +204,84 @@ function shuffle(list){
 function shuffledGenDays(){ return shuffle(genDays); }
 
 function maxWeeklyHours(e){ return Number(e.weeklyHours || 0); }
+
+// --- Assenze: ferie / permessi / malattia ---
+// Salvate sul dipendente come e.leaves = [{id,type,start,end,from,to,note}].
+// ferie/malattia = giornate intere su un intervallo start..end.
+// permesso = un solo giorno (start=end) con fascia oraria from..to.
+function leavesOf(e){ return (e && Array.isArray(e.leaves)) ? e.leaves : []; }
+const leaveLabels={ferie:"Ferie", permesso:"Permesso", malattia:"Malattia"};
+
+// Data ISO (YYYY-MM-DD) del giorno Lun..Dom nella settimana attiva.
+function dateForDay(day){
+  const i=days.indexOf(day);
+  if(i<0) return null;
+  return isoDate(dayDatesOf(currentWeekKey)[i]);
+}
+// Assenza a giornata intera (ferie/malattia) che copre quella data.
+function fullDayLeaveOn(e, iso){
+  return leavesOf(e).find(l=>(l.type==="ferie"||l.type==="malattia") && iso>=l.start && iso<=(l.end||l.start)) || null;
+}
+// Permesso a ore in quella data.
+function partialLeaveOn(e, iso){
+  return leavesOf(e).find(l=>l.type==="permesso" && iso>=l.start && iso<=(l.end||l.start)) || null;
+}
+// Qualsiasi assenza in quella data (per la visualizzazione).
+function leaveOn(e, iso){ return fullDayLeaveOn(e,iso) || partialLeaveOn(e,iso); }
+function fullDayLeaveOnDay(e, day){ const iso=dateForDay(day); return iso? fullDayLeaveOn(e,iso):null; }
+function partialLeaveOnDay(e, day){ const iso=dateForDay(day); return iso? partialLeaveOn(e,iso):null; }
+function leaveOnDay(e, day){ const iso=dateForDay(day); return iso? leaveOn(e,iso):null; }
+
+// Ore giornaliere "tipiche": ore settimanali diviso i giorni normalmente
+// lavorati (esclusa la domenica e il riposo fisso).
+function typicalDailyHours(e){
+  const workDays=genDays.filter(d=>!(e.rest && e.rest===d)).length;
+  return workDays>0 ? maxWeeklyHours(e)/workDays : 0;
+}
+// Ore da scalare per assenze nella settimana attiva: giornate intere valgono
+// le ore tipiche, i permessi valgono la durata della fascia.
+function leaveHoursThisWeek(e){
+  let h=0;
+  genDays.forEach(day=>{
+    const iso=dateForDay(day);
+    if(!iso) return;
+    if(fullDayLeaveOn(e,iso)){ h+=typicalDailyHours(e); return; }
+    const p=partialLeaveOn(e,iso);
+    if(p && p.from && p.to) h+=Math.max(0, hoursBetween(p.from,p.to));
+  });
+  return h;
+}
+// Target ore della settimana attiva: ore contrattuali meno le assenze, così
+// chi è in ferie non si vede stipare le ore nei giorni rimasti.
+function weeklyTarget(e){
+  return Math.max(0, Math.round(maxWeeklyHours(e)-leaveHoursThisWeek(e)));
+}
+
+// Totale assenze di un dipendente su TUTTE le sue ferie (per il riepilogo).
+// Ferie/malattia: contano solo i giorni lavorativi (no domenica né riposo),
+// valorizzati con le ore giornaliere tipiche. Permessi: somma delle fasce.
+function leaveStats(e){
+  let ferieDays=0, ferieHours=0, permessoHours=0, malattiaDays=0, malattiaHours=0;
+  const daily=typicalDailyHours(e);
+  leavesOf(e).forEach(l=>{
+    if(l.type==="permesso"){
+      if(l.from && l.to) permessoHours+=Math.max(0, hoursBetween(l.from,l.to));
+      return;
+    }
+    let cur=keyToDate(l.start); const end=keyToDate(l.end||l.start);
+    while(cur<=end){
+      const dayName=days[(cur.getDay()+6)%7];
+      const workday = dayName!=="Dom" && !(e.rest && e.rest===dayName);
+      if(workday){
+        if(l.type==="ferie"){ ferieDays++; ferieHours+=daily; }
+        else if(l.type==="malattia"){ malattiaDays++; malattiaHours+=daily; }
+      }
+      cur.setDate(cur.getDate()+1);
+    }
+  });
+  const r=n=>Math.round(n*10)/10;
+  return {ferieDays, ferieHours:r(ferieHours), permessoHours:r(permessoHours), malattiaDays, malattiaHours:r(malattiaHours)};
+}
 function getStoreWorkers(storeId){ return employees.filter(e=>canWorkIn(e,storeId)); }
 function workerPriority(e, storeId){
   return (e.isExtra ? 1000 : 0) + (e.primaryStoreId===storeId ? 0 : 100);
@@ -224,14 +302,53 @@ function awayShiftCount(eid){
 function canWorkDay(e, day){
   if(day==="Dom") return false;
   if(e.rest && e.rest===day) return false;
+  if(fullDayLeaveOnDay(e,day)) return false; // ferie / malattia: giornata intera
   return true;
 }
-function employeeMissingHours(e){ return maxWeeklyHours(e)-employeeTotal(e.id); }
+// Un permesso a ore lascia il dipendente disponibile nel resto del giorno:
+// un turno è valido solo se non si sovrappone alla fascia del permesso.
+function shiftClearsPartialLeave(e,day,shift){
+  const p=partialLeaveOnDay(e,day);
+  if(!p || !p.from || !p.to) return true;
+  const window={start:p.from, end:p.to};
+  return !(shift.segments||[]).some(seg=>overlaps(seg,window));
+}
+// Un turno è in conflitto con un'assenza (settimana attiva): ferie/malattia
+// coprono tutta la giornata, il permesso solo se il turno si sovrappone.
+function shiftConflictsWithLeave(e,day,shift){
+  if(fullDayLeaveOnDay(e,day)) return true;
+  return !shiftClearsPartialLeave(e,day,shift);
+}
+// Rimuove, in TUTTE le settimane salvate, i turni in conflitto con le assenze
+// del dipendente — anche quelli bloccati a mano: l'assenza vince sempre.
+function pruneShiftsForEmployeeLeaves(e){
+  Object.entries(schedules).forEach(([wk,wsched])=>{
+    const wkDates=dayDatesOf(wk);
+    days.forEach((day,i)=>{
+      const iso=isoDate(wkDates[i]);
+      const full=fullDayLeaveOn(e,iso);
+      const part=partialLeaveOn(e,iso);
+      if(!full && !part) return;
+      stores.forEach(st=>{
+        const cell=wsched[st.id]&&wsched[st.id][e.id];
+        const sh=cell&&cell[day];
+        if(!sh) return;
+        if(full){ cell[day]=null; return; }
+        if(part && part.from && part.to){
+          const overlapsBand=(sh.segments||[]).some(seg=>overlaps(seg,{start:part.from,end:part.to}));
+          if(overlapsBand) cell[day]=null;
+        }
+      });
+    });
+  });
+}
+function employeeMissingHours(e){ return weeklyTarget(e)-employeeTotal(e.id); }
 function canAssignShiftStrict(storeId,e,day,shift){
   if(!canWorkDay(e,day)) return false;
+  if(!shiftClearsPartialLeave(e,day,shift)) return false;
   if(schedule[storeId]?.[e.id]?.[day]) return false;
   if(hasShiftElsewhere(storeId,e.id,day)) return false;
-  return employeeTotal(e.id)+shift.workedHours<=maxWeeklyHours(e);
+  return employeeTotal(e.id)+shift.workedHours<=weeklyTarget(e);
 }
 function clearGeneratedScheduleForStore(storeId){
   // I dipendenti "solo manuale" non vengono mai toccati dalla generazione:
@@ -241,7 +358,12 @@ function clearGeneratedScheduleForStore(storeId){
   getStoreWorkers(storeId).filter(e=>!e.manual).forEach(e=>{
     schedule[storeId]=schedule[storeId]||{};
     const cur=schedule[storeId][e.id]||{};
-    schedule[storeId][e.id]=Object.fromEntries(days.map(d=>[d, cur[d]&&cur[d].locked ? cur[d] : null]));
+    // Preserva i turni bloccati, tranne quelli in conflitto con un'assenza:
+    // in quel caso l'assenza vince e il turno viene rimosso.
+    schedule[storeId][e.id]=Object.fromEntries(days.map(d=>{
+      const keep = cur[d] && cur[d].locked && !shiftConflictsWithLeave(e,d,cur[d]);
+      return [d, keep ? cur[d] : null];
+    }));
   });
 }
 function buildShiftFromSegments(segments,e){
@@ -514,7 +636,7 @@ function generateAllSchedules(){
   completeMandatoryHoursGlobal();
 
   employees
-    .filter(e=>!e.fixedShifts && !e.manual && employeeTotal(e.id)>maxWeeklyHours(e))
+    .filter(e=>!e.fixedShifts && !e.manual && employeeTotal(e.id)>weeklyTarget(e))
     .forEach(e=>reduceEmployeeHoursGlobal(e));
 
   stores.forEach(st=>repairAllCoverageForStore(st.id));
@@ -656,6 +778,26 @@ function renderOptions(){
   if(selectedPrimary && stores.some(s=>s.id===selectedPrimary)) empPrimaryStore.value=selectedPrimary;
 
   renderSecondaryStoreChecks(selectedSecondaries);
+
+  // Selettore "Chi sei?" della vista dipendente: ordine alfabetico,
+  // selezione ricordata tra le sessioni.
+  const empView=document.getElementById("empViewSelect");
+  if(empView){
+    const prev=empView.value || localStorage.getItem("am134_empview") || "";
+    const ordered=employees.slice().sort((a,b)=>a.name.localeCompare(b.name));
+    empView.innerHTML=`<option value="">— seleziona il tuo nome —</option>`+
+      ordered.map(e=>`<option value="${e.id}">${e.name}</option>`).join("");
+    if(prev && employees.some(e=>e.id===prev)) empView.value=prev;
+  }
+
+  // Selettore dipendente nella sezione Ferie.
+  const leaveEmp=document.getElementById("leaveEmp");
+  if(leaveEmp){
+    const prevL=leaveEmp.value;
+    const ordered=employees.slice().sort((a,b)=>a.name.localeCompare(b.name));
+    leaveEmp.innerHTML=ordered.map(e=>`<option value="${e.id}">${e.name}</option>`).join("");
+    if(prevL && employees.some(e=>e.id===prevL)) leaveEmp.value=prevL;
+  }
 }
 
 function renderWeekHeader(){
@@ -680,7 +822,8 @@ function renderWeek(){
   const workers=employees.filter(e=>canWorkIn(e,storeId));
 
   weekBody.innerHTML=workers.map(e=>{
-    return `<tr><td>${e.name}</td>${days.map(d=>cell(storeId,e,d)).join("")}<td><span class="hours ${employeeTotal(e.id)>e.weeklyHours?'over':employeeTotal(e.id)===e.weeklyHours?'ok':''}">${employeeTotal(e.id)}/${e.weeklyHours}h</span></td></tr>`;
+    const tot=employeeTotal(e.id), tgt=weeklyTarget(e);
+    return `<tr><td>${e.name}</td>${days.map(d=>cell(storeId,e,d)).join("")}<td><span class="hours ${tot>tgt?'over':tot===tgt?'ok':''}">${tot}/${tgt}h</span></td></tr>`;
   }).join("")||`<tr><td colspan="9">Nessun dipendente</td></tr>`;
 
   renderDays();
@@ -693,11 +836,22 @@ function renderWeek(){
 function cell(storeId,e,d){
   const sh=schedule[storeId]?.[e.id]?.[d];
   const lock = sh&&sh.locked ? ` <span class="lock" title="Turno bloccato: la generazione non lo modifica">🔒</span>` : "";
-  const content = sh
-    ? `<span class="shift${sh.locked?" locked":""}">${sh.time}${lock}</span>${sh.pause && sh.pause!=="No"?`<span class="note">Pausa ${sh.pause}</span>`:""}`
-    : `<span class="muted">${e.rest===d?'Riposo':'—'}</span>`;
-
+  const lv=leaveOnDay(e,d);
+  let content;
+  if(sh){
+    content=`<span class="shift${sh.locked?" locked":""}">${sh.time}${lock}</span>${sh.pause && sh.pause!=="No"?`<span class="note">Pausa ${sh.pause}</span>`:""}`;
+    if(lv && lv.type==="permesso") content+=`<span class="note">Permesso ${lv.from}-${lv.to}</span>`;
+  }else if(lv){
+    content=leaveBadge(lv);
+  }else{
+    content=`<span class="muted">${e.rest===d?'Riposo':'—'}</span>`;
+  }
   return `<td class="editable-cell" data-store="${storeId}" data-employee="${e.id}" data-day="${d}">${content}</td>`;
+}
+
+function leaveBadge(lv){
+  const extra=lv.type==="permesso" && lv.from ? ` ${lv.from}-${lv.to}` : "";
+  return `<span class="leave leave-${lv.type}">${leaveLabels[lv.type]||"Assenza"}${extra}</span>`;
 }
 
 function renderDays(){
@@ -720,6 +874,164 @@ function renderDays(){
   });
 }
 
+// Vista "Il mio turno": il dipendente sceglie il suo nome e vede la propria
+// settimana con TUTTI i turni, uniti da tutti i negozi in cui lavora (chi sta
+// su più PDV li trova in un'unica interfaccia, con il negozio indicato).
+function renderEmployeeView(){
+  const sel=document.getElementById("empViewSelect");
+  const label=document.getElementById("empViewLabel");
+  const jump=document.getElementById("empViewJump");
+  const summary=document.getElementById("empViewSummary");
+  const daysBox=document.getElementById("empViewDays");
+  if(!daysBox) return;
+
+  if(label) label.textContent=formatWeekRange(currentWeekKey);
+  if(jump) jump.value=currentWeekKey;
+
+  const eid=sel?.value;
+  const e=employees.find(x=>x.id===eid);
+  if(!e){
+    if(summary) summary.innerHTML="";
+    daysBox.innerHTML=`<p class="muted" style="padding:8px">Seleziona il tuo nome per vedere i tuoi turni della settimana.</p>`;
+    return;
+  }
+
+  const dates=dayDatesOf(currentWeekKey);
+  const total=employeeTotal(e.id);
+
+  // Ripartizione ore per negozio (solo dove lavora davvero questa settimana).
+  const perStore=stores.map(st=>{
+    let h=0; days.forEach(d=>h+=shiftHours(schedule[st.id]?.[e.id]?.[d]));
+    return {name:st.name, h};
+  }).filter(x=>x.h>0);
+
+  // Conteggio assenze della settimana attiva, per tipo.
+  const absCount={};
+  genDays.forEach(d=>{ const lv=leaveOnDay(e,d); if(lv) absCount[lv.type]=(absCount[lv.type]||0)+1; });
+
+  if(summary){
+    const target=weeklyTarget(e);
+    const storeChips=perStore.map(s=>`<span class="tag">${s.name}: ${s.h}h</span>`).join("");
+    const absChips=Object.entries(absCount).map(([t,n])=>`<span class="tag leave-tag leave-${t}">${leaveLabels[t]}: ${n} ${n===1?'giorno':'giorni'}</span>`).join("");
+    const chips=(storeChips+absChips) || `<span class="muted">Nessun turno questa settimana</span>`;
+    summary.innerHTML=`<div class="emp-summary-head"><strong>${e.name}</strong>`+
+      `<span class="hours ${total>=target?'ok':''}">${total}/${target}h</span></div>`+
+      `<div class="emp-summary-stores">${chips}</div>`;
+  }
+
+  daysBox.innerHTML=days.map((d,i)=>{
+    const items=stores
+      .map(st=>[st,schedule[st.id]?.[e.id]?.[d]])
+      .filter(x=>x[1])
+      .sort((a,b)=>a[1].time.localeCompare(b[1].time));
+    const lv=leaveOnDay(e,d);
+
+    let inner;
+    if(items.length){
+      inner=items.map(([st,s])=>`<div class="person"><strong>${st.name}</strong><span>${s.time}</span>${s.pause&&s.pause!=="No"?`<small class="note">Pausa ${s.pause}</small>`:""}</div>`).join("");
+      if(lv && lv.type==="permesso") inner+=`<div class="note">Permesso ${lv.from}-${lv.to}</div>`;
+    }else if(lv){
+      inner=leaveBadge(lv);
+    }else{
+      inner=`<span class="muted">${e.rest===d?'Riposo':'—'}</span>`;
+    }
+
+    return `<div class="day"><h3>${d} ${dates[i].getDate()}</h3>${inner}</div>`;
+  }).join("");
+}
+
+
+// --- Sezione Ferie / assenze ---
+function leaveTypeIsPartial(t){ return t==="permesso"; }
+
+function updateLeaveFormFields(){
+  const t=document.getElementById("leaveType")?.value;
+  const hoursRow=document.getElementById("leaveHoursRow");
+  const endField=document.getElementById("leaveEndField");
+  if(!hoursRow||!endField) return;
+  const partial=leaveTypeIsPartial(t);
+  hoursRow.style.display=partial?"grid":"none";
+  endField.style.display=partial?"none":"grid";
+}
+
+function formatDateShort(iso){
+  const d=keyToDate(iso);
+  return `${d.getDate()} ${monthsShort[d.getMonth()]} ${d.getFullYear()}`;
+}
+function formatLeaveWhen(l){
+  if(l.type==="permesso") return `${formatDateShort(l.start)} · ${l.from}-${l.to}`;
+  return l.start===l.end ? formatDateShort(l.start) : `${formatDateShort(l.start)} → ${formatDateShort(l.end)}`;
+}
+
+function addLeave(ev){
+  ev.preventDefault();
+  const emp=employees.find(x=>x.id===document.getElementById("leaveEmp").value);
+  if(!emp){ showNotice("Seleziona un dipendente.","warn"); return; }
+  const type=document.getElementById("leaveType").value;
+  const start=document.getElementById("leaveStart").value;
+  if(!start){ showNotice("Indica la data di inizio.","warn"); return; }
+  const note=document.getElementById("leaveNote").value.trim();
+  const leave={id:"lv_"+Date.now().toString().slice(-6), type, start, end:start, note};
+
+  if(leaveTypeIsPartial(type)){
+    const from=document.getElementById("leaveFrom").value;
+    const to=document.getElementById("leaveTo").value;
+    if(!from||!to||toMin(to)<=toMin(from)){ showNotice("Fascia oraria del permesso non valida.","warn"); return; }
+    leave.from=from; leave.to=to; // permesso: un solo giorno
+  }else{
+    const end=document.getElementById("leaveEnd").value||start;
+    if(end<start){ showNotice("La data finale è prima di quella iniziale.","warn"); return; }
+    leave.end=end;
+  }
+
+  emp.leaves=leavesOf(emp).concat(leave);
+  // L'assenza vince: rimuove subito i turni in conflitto in tutte le settimane
+  // (anche quelli bloccati a mano).
+  pruneShiftsForEmployeeLeaves(emp);
+  saveData();
+  renderAll();
+  showNotice("Assenza aggiunta. Turni in conflitto rimossi; rigenera per ricoprire i buchi.","ok");
+  document.getElementById("leaveNote").value="";
+}
+
+function deleteLeave(empId, leaveId){
+  const emp=employees.find(x=>x.id===empId);
+  if(!emp) return;
+  emp.leaves=leavesOf(emp).filter(l=>l.id!==leaveId);
+  saveData();
+  renderAll();
+  showNotice("Assenza rimossa. Rigenera la proposta.","warn");
+}
+
+function renderLeaves(){
+  const box=document.getElementById("leaveList");
+  if(!box) return;
+  const rows=[];
+  employees.forEach(e=>leavesOf(e).forEach(l=>rows.push({e,l})));
+  rows.sort((a,b)=>a.l.start.localeCompare(b.l.start) || a.e.name.localeCompare(b.e.name));
+  box.innerHTML=rows.length ? rows.map(({e,l})=>`
+    <div class="leave-row">
+      <span class="leave leave-${l.type}">${leaveLabels[l.type]||"Assenza"}</span>
+      <div class="leave-info"><strong>${e.name}</strong><span>${formatLeaveWhen(l)}${l.note?` · ${l.note}`:""}</span></div>
+      <button class="delete" onclick="deleteLeave('${e.id}','${l.id}')">Elimina</button>
+    </div>`).join("") : `<p class="muted">Nessuna assenza registrata.</p>`;
+
+  renderLeaveStats();
+}
+
+// Riepilogo per dipendente: quante ferie/permessi/malattia ha fatto.
+function renderLeaveStats(){
+  const body=document.getElementById("leaveStatsBody");
+  if(!body) return;
+  const ordered=employees.slice().sort((a,b)=>a.name.localeCompare(b.name));
+  body.innerHTML=ordered.map(e=>{
+    const s=leaveStats(e);
+    const ferie = s.ferieDays ? `${s.ferieDays} ${s.ferieDays===1?'giorno':'giorni'} · <strong>${s.ferieHours}h</strong>` : "—";
+    const permessi = s.permessoHours ? `<strong>${s.permessoHours}h</strong>` : "—";
+    const malattia = s.malattiaDays ? `${s.malattiaDays} ${s.malattiaDays===1?'giorno':'giorni'} · ${s.malattiaHours}h` : "—";
+    return `<tr><td>${e.name}</td><td>${ferie}</td><td>${permessi}</td><td>${malattia}</td></tr>`;
+  }).join("") || `<tr><td colspan="4">Nessun dipendente</td></tr>`;
+}
 
 function resetEmployeeForm(){
   employeeForm.reset();
@@ -826,8 +1138,9 @@ function renderDashboard(){
 
   hoursSummary.innerHTML=employees.map(e=>{
     const h=employeeTotal(e.id);
-    const p=Math.min(100,Math.round(h/e.weeklyHours*100));
-    return `<div class="progressrow"><header><span>${e.name}</span><span>${h}/${e.weeklyHours}h</span></header><div class="progress"><span style="width:${p}%"></span></div></div>`;
+    const tgt=weeklyTarget(e);
+    const p=tgt>0?Math.min(100,Math.round(h/tgt*100)):0;
+    return `<div class="progressrow"><header><span>${e.name}</span><span>${h}/${tgt}h</span></header><div class="progress"><span style="width:${p}%"></span></div></div>`;
   }).join("")||"Nessun dipendente";
 
   renderDashboardCalendar();
@@ -893,7 +1206,9 @@ function applyFixedShiftsForStore(storeId){
     schedule[storeId][e.id]=Object.fromEntries(days.map(d=>[d,null]));
     Object.entries(e.fixedSchedule||{}).forEach(([day,f])=>{
       if(day==="Dom")return;
+      if(fullDayLeaveOnDay(e,day))return;              // ferie/malattia: niente turno
       const sh=fixedShiftToShift(f);
+      if(sh && !shiftClearsPartialLeave(e,day,sh))return; // permesso: turno che si sovrappone
       if(sh && isShiftInsideStore(sh,store)){
         schedule[storeId][e.id][day]=sh;
       }
@@ -937,7 +1252,7 @@ function findGenericAssignmentForBand(storeId,day,band,preferSpecial){
         const oldHours=existing.workedHours;
         shiftOptionsForStore(store,e)
           .filter(opt=>shiftCovers(opt,band))
-          .filter(opt=>employeeTotal(e.id)-oldHours+opt.workedHours<=maxWeeklyHours(e))
+          .filter(opt=>employeeTotal(e.id)-oldHours+opt.workedHours<=weeklyTarget(e))
           .filter(opt=>replacementPreservesCriticalCoverage(storeId,store,e.id,day,opt,band))
           .forEach(opt=>candidates.push({employee:e,shift:opt,score:genericScore(storeId,day,band,e,opt,preferSpecial)-10}));
       }
@@ -1086,7 +1401,7 @@ function completeMandatoryHoursForStore(storeId){
 
   ordered.forEach(e=>{
     let guard=0;
-    while(employeeTotal(e.id)<maxWeeklyHours(e) && guard<250){
+    while(employeeTotal(e.id)<weeklyTarget(e) && guard<250){
       guard++;
       const assignment=findBestHourCompletion(storeId,store,e);
       if(!assignment) break;
@@ -1094,7 +1409,7 @@ function completeMandatoryHoursForStore(storeId){
     }
 
     guard=0;
-    while(employeeTotal(e.id)>maxWeeklyHours(e) && guard<120){
+    while(employeeTotal(e.id)>weeklyTarget(e) && guard<120){
       guard++;
       if(!reduceEmployeeHours(storeId,store,e)) break;
     }
@@ -1128,7 +1443,7 @@ function findBestHourCompletion(storeId,store,e){
 }
 
 function reduceEmployeeHours(storeId,store,e){
-  const overflow=employeeTotal(e.id)-maxWeeklyHours(e);
+  const overflow=employeeTotal(e.id)-weeklyTarget(e);
   const candidates=[];
 
   genDays.forEach(day=>{
@@ -1229,7 +1544,7 @@ function completeMandatoryHoursGlobal(){
 
   workers.forEach(e=>{
     let guard=0;
-    while(employeeTotal(e.id)<maxWeeklyHours(e) && guard<250){
+    while(employeeTotal(e.id)<weeklyTarget(e) && guard<250){
       guard++;
       const assignment=findBestHourCompletionAcrossStores(e);
       if(!assignment) break;
@@ -1239,7 +1554,7 @@ function completeMandatoryHoursGlobal(){
 }
 
 function reduceOnceAcrossStores(e){
-  const overflow=employeeTotal(e.id)-maxWeeklyHours(e);
+  const overflow=employeeTotal(e.id)-weeklyTarget(e);
   const candidates=[];
 
   eligibleStoresOrdered(e).forEach(({store,rank:storeRank})=>{
@@ -1266,7 +1581,7 @@ function reduceOnceAcrossStores(e){
 
 function reduceEmployeeHoursGlobal(e){
   let guard=0;
-  while(employeeTotal(e.id)>maxWeeklyHours(e) && guard<120){
+  while(employeeTotal(e.id)>weeklyTarget(e) && guard<120){
     guard++;
     if(!reduceOnceAcrossStores(e)) break;
   }
@@ -1320,7 +1635,7 @@ function minimizeResidualGapsForStore(storeId){
         const current=schedule[storeId][e.id][day];
         const options=shiftOptionsForStore(store,e).filter(opt=>{
           const delta=opt.workedHours-current.workedHours;
-          return employeeTotal(e.id)+delta<=maxWeeklyHours(e);
+          return employeeTotal(e.id)+delta<=weeklyTarget(e);
         });
 
         let swapped=false;
@@ -1404,13 +1719,25 @@ function alerts(){
   employees.forEach(e=>{
     const total=employeeTotal(e.id);
 
-    if(total>maxWeeklyHours(e)){
-      out.push({type:"danger",text:`${e.name}: supera le ore massime ${total}/${maxWeeklyHours(e)}h`});
+    if(total>weeklyTarget(e)){
+      out.push({type:"danger",text:`${e.name}: supera le ore massime ${total}/${weeklyTarget(e)}h`});
     }
 
-    if(!e.isExtra && total<maxWeeklyHours(e)){
-      out.push({type:"warn",text:`${e.name}: ore non raggiunte ${total}/${maxWeeklyHours(e)}h`});
+    if(!e.isExtra && total<weeklyTarget(e)){
+      out.push({type:"warn",text:`${e.name}: ore non raggiunte ${total}/${weeklyTarget(e)}h`});
     }
+
+    // Rete di sicurezza: se restasse un turno su un giorno di assenza (di norma
+    // viene rimosso in automatico), segnalalo così il manager può rigenerare.
+    stores.forEach(st=>{
+      genDays.forEach(d=>{
+        const sh=schedule[st.id]?.[e.id]?.[d];
+        if(sh && shiftConflictsWithLeave(e,d,sh)){
+          const lv=leaveOnDay(e,d);
+          out.push({type:"danger",text:`${e.name} è in ${leaveLabels[lv.type]} il ${d} ma ha ancora un turno (${st.name}): rigenera per rimuoverlo`});
+        }
+      });
+    });
   });
 
   stores.forEach(st=>{
@@ -1550,7 +1877,10 @@ function addEmployee(e){
     isExtra:!!profile.isExtra,
     fixedShifts:profile.id==="turno_fisso",
     fixedSchedule:fixedShifts,
-    manual:profile.id==="turno_fisso"?false:empManualOnly.checked
+    manual:profile.id==="turno_fisso"?false:empManualOnly.checked,
+    // Le assenze non si toccano dal form dipendente: si preservano quelle
+    // già presenti (si gestiscono nella sezione Ferie).
+    leaves:(employees.find(x=>x.id===id)?.leaves)||[]
   };
 
   const idx=employees.findIndex(x=>x.id===id);
@@ -1697,6 +2027,21 @@ function saveManualShift(event){
 
     if(employee.rest===day){
       showNotice("Turno non salvato: giorno di riposo.","warn");
+      editShiftDialog.close();
+      renderAll();
+      return;
+    }
+
+    const full=fullDayLeaveOnDay(employee,day);
+    if(full){
+      showNotice(`Turno non salvato: ${leaveLabels[full.type]} quel giorno.`,"warn");
+      editShiftDialog.close();
+      renderAll();
+      return;
+    }
+    if(!shiftClearsPartialLeave(employee,day,option)){
+      const p=partialLeaveOnDay(employee,day);
+      showNotice(`Turno non salvato: si sovrappone al permesso ${p.from}-${p.to}.`,"warn");
       editShiftDialog.close();
       renderAll();
       return;
@@ -1920,8 +2265,12 @@ function importBackupFile(file){
 function setView(v){
   document.querySelectorAll(".nav").forEach(n=>n.classList.toggle("active",n.dataset.view===v));
   document.querySelectorAll(".view").forEach(s=>s.classList.toggle("active",s.id===v));
-  title.textContent={dashboard:"Dashboard",turni:"Turni",dipendenti:"Dipendenti",negozi:"Negozi"}[v];
-  subtitle.textContent={dashboard:"Panoramica della settimana.",turni:"Vista settimanale per negozio.",dipendenti:"Gestione personale.",negozi:"Gestione punti vendita."}[v];
+  title.textContent={dashboard:"Dashboard",turni:"Turni",mioturno:"Il mio turno",dipendenti:"Dipendenti",ferie:"Ferie",negozi:"Negozi"}[v];
+  subtitle.textContent={dashboard:"Panoramica della settimana.",turni:"Vista settimanale per negozio.",mioturno:"Scegli il tuo nome e vedi solo i tuoi turni.",dipendenti:"Gestione personale.",ferie:"Ferie, permessi e malattia dei dipendenti.",negozi:"Gestione punti vendita."}[v];
+
+  // Nella vista dipendente nascondi il pulsante di generazione globale:
+  // è una schermata di sola consultazione.
+  if(typeof btnGenerateAll!=="undefined") btnGenerateAll.style.display = v==="mioturno" ? "none" : "";
 }
 
 
@@ -2000,13 +2349,26 @@ function renderAll(){
   ensureSchedule();
   renderOptions();
   renderWeek();
+  renderEmployeeView();
   renderEmployees();
   renderStores();
   renderProfiles();
+  renderLeaves();
   renderDashboard();
 }
 
-document.querySelectorAll(".nav").forEach(n=>n.onclick=()=>setView(n.dataset.view));
+document.querySelectorAll(".nav").forEach(n=>n.onclick=()=>{
+  setView(n.dataset.view);
+  document.querySelector(".sidebar")?.classList.remove("open"); // chiudi il menù mobile
+});
+if(typeof navToggle!=="undefined") navToggle.onclick=()=>document.querySelector(".sidebar")?.classList.toggle("open");
+
+// Sezione Ferie
+if(typeof leaveForm!=="undefined"){
+  leaveForm.onsubmit=addLeave;
+  leaveType.onchange=updateLeaveFormFields;
+  updateLeaveFormFields();
+}
 btnGenerateAll.onclick=generateAllSchedules;
 btnGenerateSelected.onclick=()=>{
   const selected=storeSelect.value;
@@ -2033,6 +2395,16 @@ if(typeof btnDashPrevWeek!=="undefined") btnDashPrevWeek.onclick=()=>setWeek(add
 if(typeof btnDashNextWeek!=="undefined") btnDashNextWeek.onclick=()=>setWeek(addWeeks(currentWeekKey,1));
 if(typeof btnDashToday!=="undefined") btnDashToday.onclick=()=>setWeek(weekKeyOf(new Date()));
 if(typeof dashWeekJump!=="undefined") dashWeekJump.onchange=e=>jumpToWeekFromInput(e.target.value);
+
+// Vista dipendente "Il mio turno"
+if(typeof empViewSelect!=="undefined") empViewSelect.onchange=()=>{
+  localStorage.setItem("am134_empview", empViewSelect.value||"");
+  renderEmployeeView();
+};
+if(typeof btnEmpPrevWeek!=="undefined") btnEmpPrevWeek.onclick=()=>setWeek(addWeeks(currentWeekKey,-1));
+if(typeof btnEmpNextWeek!=="undefined") btnEmpNextWeek.onclick=()=>setWeek(addWeeks(currentWeekKey,1));
+if(typeof btnEmpToday!=="undefined") btnEmpToday.onclick=()=>setWeek(weekKeyOf(new Date()));
+if(typeof empViewJump!=="undefined") empViewJump.onchange=e=>jumpToWeekFromInput(e.target.value);
 storeForm.onsubmit=addStore;
 employeeForm.onsubmit=addEmployee;
 btnAddSpecialBand.onclick=addSpecialBandRow;
