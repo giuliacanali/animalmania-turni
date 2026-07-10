@@ -27,11 +27,34 @@
         <h1 id="title">Dashboard</h1>
         <p id="subtitle">Panoramica della settimana.</p>
       </div>
-      <button class="primary" id="btnGenerateAll">Genera proposta</button>
+      <button class="primary" id="btnGenerateAll">Genera tutti i negozi</button>
     </header>
 
     <section id="dashboard" class="view active">
       <div class="cards" id="dashboardCards"></div>
+
+      <article class="panel">
+        <h2>Calendario settimanale — tutti i negozi</h2>
+        <div class="weeknav">
+          <button id="btnDashPrevWeek" title="Settimana precedente">◀</button>
+          <span id="dashWeekLabel" class="week-label"></span>
+          <button id="btnDashNextWeek" title="Settimana successiva">▶</button>
+          <button id="btnDashToday">Oggi</button>
+          <label class="week-jump">Vai a<input type="date" id="dashWeekJump"></label>
+        </div>
+        <div class="tablewrap">
+          <table class="dash-week">
+            <thead><tr id="dashWeekHead"></tr></thead>
+            <tbody id="dashWeekBody"></tbody>
+          </table>
+        </div>
+        <div class="dash-legend">
+          <span><i class="dot ok"></i>Coperto</span>
+          <span><i class="dot gap"></i>Buco di copertura</span>
+          <span><i class="dot closed"></i>Chiuso</span>
+        </div>
+      </article>
+
       <div class="grid2 dashboard-only-hours">
         <article class="panel">
           <h2>Ore dipendenti</h2>
@@ -46,12 +69,13 @@
         <span id="weekLabel" class="week-label"></span>
         <button id="btnNextWeek" title="Settimana successiva">▶</button>
         <button id="btnToday">Oggi</button>
+        <label class="week-jump">Vai a<input type="date" id="weekJump"></label>
         <button id="btnExportPng" title="Scarica la settimana come immagine">Esporta PNG</button>
       </div>
 
       <div class="toolbar">
         <label>Negozio<select id="storeSelect"></select></label>
-        <button class="primary" id="btnGenerateSelected">Genera proposta</button>
+        <button class="primary" id="btnGenerateSelected">Genera solo questo negozio</button>
         <button id="btnSave">Salva</button>
         <button id="btnClear">Svuota turni</button>
       </div>

@@ -139,3 +139,49 @@ dialog::backdrop {
 }
 .shift.locked { box-shadow: inset 0 0 0 2px var(--orange); }
 .lock { font-size: 11px; }
+
+/* V16 calendario dashboard + salto settimana */
+.week-jump {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.week-jump input { padding: 6px 8px; }
+
+table.dash-week { min-width: 640px; }
+table.dash-week th { text-align: center; white-space: nowrap; }
+table.dash-week td { text-align: center; }
+.dash-week .dc-name { text-align: left; font-weight: 800; white-space: nowrap; }
+.dash-week td.dc {
+  font-weight: 900;
+  cursor: pointer;
+  transition: filter .1s;
+}
+.dash-week td.dc:hover { filter: brightness(.95); }
+.dash-week td.dc.ok { background: #edf8ef; color: var(--ok); }
+.dash-week td.dc.gap { background: #fff0ec; color: var(--danger); }
+.dash-week td.dc.closed { color: #ccc; cursor: default; background: transparent; }
+.dash-week .warnmark {
+  display: inline-block;
+  font-weight: 900;
+  color: #fff;
+  background: var(--danger);
+  border-radius: 999px;
+  width: 15px; height: 15px;
+  line-height: 15px;
+  font-size: 11px;
+}
+.dash-legend {
+  display: flex;
+  gap: 16px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.dash-legend span { display: flex; align-items: center; gap: 6px; color: var(--muted); font-weight: 700; font-size: 12px; }
+.dash-legend .dot { width: 12px; height: 12px; border-radius: 4px; display: inline-block; }
+.dash-legend .dot.ok { background: #cdeccf; }
+.dash-legend .dot.gap { background: #f6c9bd; }
+.dash-legend .dot.closed { background: #e7e1da; }

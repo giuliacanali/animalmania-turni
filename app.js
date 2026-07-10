@@ -668,6 +668,8 @@ function renderWeekHeader(){
   }
   const label=document.getElementById("weekLabel");
   if(label) label.textContent=formatWeekRange(currentWeekKey);
+  const jump=document.getElementById("weekJump");
+  if(jump) jump.value=currentWeekKey;
 }
 
 function renderWeek(){
@@ -828,7 +830,59 @@ function renderDashboard(){
     return `<div class="progressrow"><header><span>${e.name}</span><span>${h}/${e.weeklyHours}h</span></header><div class="progress"><span style="width:${p}%"></span></div></div>`;
   }).join("")||"Nessun dipendente";
 
+  renderDashboardCalendar();
   renderTurniIssues();
+}
+
+// Stato di un negozio in un giorno: chiuso, coperto, oppure con buchi.
+// Usato dal calendario riepilogativo in Dashboard.
+function storeDayInfo(storeId,day){
+  const store=stores.find(s=>s.id===storeId);
+  if(!store || !store.openDays.includes(day)) return {state:"closed",count:0};
+  const bands=[
+    ...(store.specialBands||[]).map(b=>({...b,min:Number(b.min||2),base:false})),
+    ...store.sessions.flatMap(splitSessionIntoSlots)
+  ];
+  const gap=bands.some(b=>coverage(storeId,day,b)<b.min);
+  const count=employees.filter(e=>schedule[storeId]?.[e.id]?.[day]).length;
+  return {state:gap?"gap":"ok", count};
+}
+
+// Calendario settimanale d'insieme: una riga per negozio, una colonna per
+// giorno, con quante persone sono in turno e un avviso se resta un buco.
+// Cliccando una cella si salta alla vista Turni di quel negozio.
+function renderDashboardCalendar(){
+  const dates=dayDatesOf(currentWeekKey);
+  const head=document.getElementById("dashWeekHead");
+  if(head){
+    head.innerHTML=`<th>Negozio</th>`+days.map((d,i)=>`<th>${d} ${dates[i].getDate()}</th>`).join("");
+  }
+  const body=document.getElementById("dashWeekBody");
+  if(body){
+    body.innerHTML=stores.map(st=>{
+      const cells=days.map(d=>{
+        const info=storeDayInfo(st.id,d);
+        if(info.state==="closed") return `<td class="dc closed">—</td>`;
+        const mark=info.state==="gap"?` <span class="warnmark">!</span>`:"";
+        const title=`${info.count} in turno${info.state==="gap"?" · manca copertura":""}`;
+        return `<td class="dc ${info.state}" data-store="${st.id}" title="${title}">${info.count}${mark}</td>`;
+      }).join("");
+      return `<tr><td class="dc-name">${st.name}</td>${cells}</tr>`;
+    }).join("")||`<tr><td colspan="8">Nessun negozio</td></tr>`;
+
+    body.querySelectorAll("td.dc[data-store]").forEach(td=>{
+      td.onclick=()=>{
+        if(storeSelect) storeSelect.value=td.dataset.store;
+        setView("turni");
+        renderWeek();
+        renderTurniIssues();
+      };
+    });
+  }
+  const label=document.getElementById("dashWeekLabel");
+  if(label) label.textContent=formatWeekRange(currentWeekKey);
+  const jump=document.getElementById("dashWeekJump");
+  if(jump) jump.value=currentWeekKey;
 }
 
 
@@ -1967,6 +2021,18 @@ btnPrevWeek.onclick=()=>setWeek(addWeeks(currentWeekKey,-1));
 btnNextWeek.onclick=()=>setWeek(addWeeks(currentWeekKey,1));
 btnToday.onclick=()=>setWeek(weekKeyOf(new Date()));
 btnExportPng.onclick=exportWeekPng;
+
+// Salto rapido a una settimana scegliendo una data qualsiasi (va al lunedì
+// di quella settimana). Presente sia in Turni sia in Dashboard.
+function jumpToWeekFromInput(value){
+  if(!value) return;
+  setWeek(weekKeyOf(keyToDate(value)));
+}
+if(typeof weekJump!=="undefined") weekJump.onchange=e=>jumpToWeekFromInput(e.target.value);
+if(typeof btnDashPrevWeek!=="undefined") btnDashPrevWeek.onclick=()=>setWeek(addWeeks(currentWeekKey,-1));
+if(typeof btnDashNextWeek!=="undefined") btnDashNextWeek.onclick=()=>setWeek(addWeeks(currentWeekKey,1));
+if(typeof btnDashToday!=="undefined") btnDashToday.onclick=()=>setWeek(weekKeyOf(new Date()));
+if(typeof dashWeekJump!=="undefined") dashWeekJump.onchange=e=>jumpToWeekFromInput(e.target.value);
 storeForm.onsubmit=addStore;
 employeeForm.onsubmit=addEmployee;
 btnAddSpecialBand.onclick=addSpecialBandRow;
