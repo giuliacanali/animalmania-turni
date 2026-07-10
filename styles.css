@@ -110,3 +110,32 @@ dialog::backdrop {
   font-size: 12px;
   padding: 9px 12px;
 }
+
+/* V15 calendario settimanale */
+.weeknav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 12px 16px;
+  margin-bottom: 14px;
+  box-shadow: var(--shadow);
+  flex-wrap: wrap;
+}
+.weeknav .week-label {
+  font-weight: 900;
+  font-size: 15px;
+  min-width: 210px;
+  text-align: center;
+  color: var(--text);
+}
+.weeknav #btnExportPng {
+  margin-left: auto;
+  background: var(--soft);
+  color: var(--orange);
+  border-color: var(--orange);
+}
+.shift.locked { box-shadow: inset 0 0 0 2px var(--orange); }
+.lock { font-size: 11px; }

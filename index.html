@@ -41,6 +41,14 @@
     </section>
 
     <section id="turni" class="view">
+      <div class="weeknav">
+        <button id="btnPrevWeek" title="Settimana precedente">◀</button>
+        <span id="weekLabel" class="week-label"></span>
+        <button id="btnNextWeek" title="Settimana successiva">▶</button>
+        <button id="btnToday">Oggi</button>
+        <button id="btnExportPng" title="Scarica la settimana come immagine">Esporta PNG</button>
+      </div>
+
       <div class="toolbar">
         <label>Negozio<select id="storeSelect"></select></label>
         <button class="primary" id="btnGenerateSelected">Genera proposta</button>
@@ -58,7 +66,7 @@
       <div class="tablewrap">
         <table>
           <thead>
-            <tr>
+            <tr id="weekHead">
               <th>Dipendente</th>
               <th>Lun</th><th>Mar</th><th>Mer</th><th>Gio</th><th>Ven</th><th>Sab</th><th>Dom</th>
               <th>Ore</th>

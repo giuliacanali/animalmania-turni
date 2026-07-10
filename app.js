@@ -2,6 +2,35 @@ const defaults={"stores": [{"id": "pindaro", "name": "Pindaro", "openDays": ["Lu
 const days=["Lun","Mar","Mer","Gio","Ven","Sab","Dom"];
 const genDays=["Lun","Mar","Mer","Gio","Ven","Sab"];
 
+const monthsLong=["gennaio","febbraio","marzo","aprile","maggio","giugno","luglio","agosto","settembre","ottobre","novembre","dicembre"];
+const monthsShort=["gen","feb","mar","apr","mag","giu","lug","ago","set","ott","nov","dic"];
+
+// Settimana Lun→Dom. La chiave di ogni settimana è la data ISO del lunedì.
+function mondayOf(date){
+  const d=new Date(date.getFullYear(),date.getMonth(),date.getDate());
+  const dow=(d.getDay()+6)%7; // Lun=0 … Dom=6
+  d.setDate(d.getDate()-dow);
+  return d;
+}
+function pad2(n){return String(n).padStart(2,"0");}
+function isoDate(d){return d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate());}
+function weekKeyOf(date){return isoDate(mondayOf(date));}
+function keyToDate(key){const [y,m,d]=key.split("-").map(Number);return new Date(y,m-1,d);}
+function addWeeks(key,n){const d=keyToDate(key);d.setDate(d.getDate()+n*7);return isoDate(d);}
+function dayDatesOf(key){
+  const start=keyToDate(key);
+  return days.map((_,i)=>{const d=new Date(start);d.setDate(d.getDate()+i);return d;});
+}
+function formatWeekRange(key){
+  const dates=dayDatesOf(key);
+  const a=dates[0], b=dates[6];
+  if(a.getMonth()===b.getMonth()){
+    return `${a.getDate()} – ${b.getDate()} ${monthsLong[a.getMonth()]} ${a.getFullYear()}`;
+  }
+  const yearPart=a.getFullYear()===b.getFullYear()?` ${b.getFullYear()}`:` ${a.getFullYear()}`;
+  return `${a.getDate()} ${monthsShort[a.getMonth()]} – ${b.getDate()} ${monthsShort[b.getMonth()]}${yearPart}`;
+}
+
 
 const employeeProfiles = [
   {id:"standard_40",name:"Standard 40h",weeklyHours:40,type:"8",restDefault:"Mer",pauseHours:1,isExtra:false,fixedShifts:false,description:"40h, 5 giorni da 8h, riposo obbligatorio Lun-Ven"},
@@ -30,17 +59,41 @@ function normalizeLegacyEmployees(){
 let stores=JSON.parse(localStorage.getItem("am134_stores")||JSON.stringify(defaults.stores));
 let employees=JSON.parse(localStorage.getItem("am134_employees")||JSON.stringify(defaults.employees));
 normalizeLegacyEmployees();
-let schedule=JSON.parse(localStorage.getItem("am134_schedule")||"null")||emptySchedule();
+function loadSchedules(){
+  const stored=JSON.parse(localStorage.getItem("am134_schedules")||"null");
+  if(stored && typeof stored==="object") return stored;
+  // Migrazione dal vecchio formato a settimana unica.
+  const legacy=JSON.parse(localStorage.getItem("am134_schedule")||"null");
+  if(legacy && typeof legacy==="object") return {[weekKeyOf(new Date())]:legacy};
+  return {};
+}
+
+let schedules=loadSchedules();
+let currentWeekKey=localStorage.getItem("am134_week")||weekKeyOf(new Date());
+if(!schedules[currentWeekKey]) schedules[currentWeekKey]=emptySchedule();
+let schedule=schedules[currentWeekKey];
 let suppressAutoRender = false;
 
 function saveData(){
   try{
+    schedules[currentWeekKey]=schedule;
     localStorage.setItem("am134_stores",JSON.stringify(stores));
     localStorage.setItem("am134_employees",JSON.stringify(employees));
-    localStorage.setItem("am134_schedule",JSON.stringify(schedule));
+    localStorage.setItem("am134_schedules",JSON.stringify(schedules));
+    localStorage.setItem("am134_week",currentWeekKey);
   }catch(err){
     showNotice("ATTENZIONE: le modifiche non sono state salvate sul dispositivo (navigazione privata, spazio esaurito o impostazioni del browser). Chiudendo o ricaricando la pagina andranno perse.","warn",8000);
   }
+}
+
+function setWeek(key){
+  saveData();
+  if(!schedules[key]) schedules[key]=emptySchedule();
+  currentWeekKey=key;
+  schedule=schedules[key];
+  ensureSchedule();
+  saveData();
+  renderAll();
 }
 
 function slug(x){
@@ -143,10 +196,30 @@ function shuffle(list){
   return arr;
 }
 
+// Ordine dei giorni mescolato ad ogni generazione. La copertura viene
+// comunque riempita per intero (i cicli girano finché ogni fascia è coperta),
+// ma processare i giorni in ordine diverso cambia l'accumulo di ore/trasferte
+// e quindi CHI finisce a coprire QUALE giorno: così ad ogni "Genera proposta"
+// i dipendenti non restano incollati sempre agli stessi giorni.
+function shuffledGenDays(){ return shuffle(genDays); }
+
 function maxWeeklyHours(e){ return Number(e.weeklyHours || 0); }
 function getStoreWorkers(storeId){ return employees.filter(e=>canWorkIn(e,storeId)); }
 function workerPriority(e, storeId){
   return (e.isExtra ? 1000 : 0) + (e.primaryStoreId===storeId ? 0 : 100);
+}
+// Quante "trasferte" ha già il dipendente questa settimana: turni in negozi
+// diversi dal suo principale. Serve a ruotare equamente chi copre i buchi
+// fuori sede, invece di mandare sempre la stessa persona.
+function awayShiftCount(eid){
+  const emp=employees.find(e=>e.id===eid);
+  if(!emp) return 0;
+  let n=0;
+  stores.forEach(st=>{
+    if(st.id===emp.primaryStoreId) return;
+    days.forEach(d=>{ if(schedule[st.id]?.[eid]?.[d]) n++; });
+  });
+  return n;
 }
 function canWorkDay(e, day){
   if(day==="Dom") return false;
@@ -163,10 +236,12 @@ function canAssignShiftStrict(storeId,e,day,shift){
 function clearGeneratedScheduleForStore(storeId){
   // I dipendenti "solo manuale" non vengono mai toccati dalla generazione:
   // i loro turni restano quelli impostati a mano finché non li si cambia
-  // dall'editor.
+  // dall'editor. I singoli turni bloccati (impostati a mano) vengono
+  // preservati anche per i dipendenti normali.
   getStoreWorkers(storeId).filter(e=>!e.manual).forEach(e=>{
     schedule[storeId]=schedule[storeId]||{};
-    schedule[storeId][e.id]=Object.fromEntries(days.map(d=>[d,null]));
+    const cur=schedule[storeId][e.id]||{};
+    schedule[storeId][e.id]=Object.fromEntries(days.map(d=>[d, cur[d]&&cur[d].locked ? cur[d] : null]));
   });
 }
 function buildShiftFromSegments(segments,e){
@@ -380,13 +455,13 @@ function generateStoreSchedule(storeId){
   clearGeneratedScheduleForStore(storeId);
   applyFixedShiftsForStore(storeId);
 
-  genDays.forEach(day=>{
+  shuffledGenDays().forEach(day=>{
     if(!store.openDays.includes(day)) return;
     const special=(store.specialBands||[]).map(b=>({...b,min:Number(b.min||2),base:false}));
     special.forEach(band=>coverBandGeneric(storeId,day,band,true));
   });
 
-  genDays.forEach(day=>{
+  shuffledGenDays().forEach(day=>{
     if(!store.openDays.includes(day)) return;
     const baseBands=store.sessions.flatMap(splitSessionIntoSlots);
     baseBands.forEach(band=>coverBandGeneric(storeId,day,band,false));
@@ -418,16 +493,16 @@ function generateAllSchedules(){
     applyFixedShiftsForStore(st.id);
   });
 
-  stores.forEach(st=>{
-    genDays.forEach(day=>{
+  shuffle(stores).forEach(st=>{
+    shuffledGenDays().forEach(day=>{
       if(!st.openDays.includes(day)) return;
       const special=(st.specialBands||[]).map(b=>({...b,min:Number(b.min||2),base:false}));
       special.forEach(band=>coverBandGeneric(st.id,day,band,true));
     });
   });
 
-  stores.forEach(st=>{
-    genDays.forEach(day=>{
+  shuffle(stores).forEach(st=>{
+    shuffledGenDays().forEach(day=>{
       if(!st.openDays.includes(day)) return;
       const baseBands=st.sessions.flatMap(splitSessionIntoSlots);
       baseBands.forEach(band=>coverBandGeneric(st.id,day,band,false));
@@ -492,9 +567,10 @@ function shiftTypeLabel(type){
   return type;
 }
 
-function buildFixedShiftFields(existing={}){
+function buildFixedShiftFields(existing={},restValue=""){
   const dayNames={Lun:"Lunedì",Mar:"Martedì",Mer:"Mercoledì",Gio:"Giovedì",Ven:"Venerdì",Sab:"Sabato"};
-  fixedShiftFields.innerHTML=genDays.map(d=>{
+  const restOptions=`<option value="">Nessuno</option>`+genDays.map(d=>`<option value="${d}" ${restValue===d?"selected":""}>${dayNames[d]}</option>`).join("");
+  fixedShiftFields.innerHTML=`<div class="fixed-day"><label>Giorno di riposo<select id="fixedRest">${restOptions}</select></label></div>`+genDays.map(d=>{
     const f=existing[d]||{};
     return `<div class="fixed-day">
       <h3>${dayNames[d]}</h3>
@@ -582,8 +658,21 @@ function renderOptions(){
   renderSecondaryStoreChecks(selectedSecondaries);
 }
 
+function renderWeekHeader(){
+  const dates=dayDatesOf(currentWeekKey);
+  const head=document.getElementById("weekHead");
+  if(head){
+    head.innerHTML=`<th>Dipendente</th>`+
+      days.map((d,i)=>`<th>${d} ${dates[i].getDate()}</th>`).join("")+
+      `<th>Ore</th>`;
+  }
+  const label=document.getElementById("weekLabel");
+  if(label) label.textContent=formatWeekRange(currentWeekKey);
+}
+
 function renderWeek(){
   ensureSchedule();
+  renderWeekHeader();
   const storeId=storeSelect.value||stores[0]?.id;
   if(!storeId)return;
   const workers=employees.filter(e=>canWorkIn(e,storeId));
@@ -601,8 +690,9 @@ function renderWeek(){
 
 function cell(storeId,e,d){
   const sh=schedule[storeId]?.[e.id]?.[d];
+  const lock = sh&&sh.locked ? ` <span class="lock" title="Turno bloccato: la generazione non lo modifica">🔒</span>` : "";
   const content = sh
-    ? `<span class="shift">${sh.time}</span>${sh.pause && sh.pause!=="No"?`<span class="note">Pausa ${sh.pause}</span>`:""}`
+    ? `<span class="shift${sh.locked?" locked":""}">${sh.time}${lock}</span>${sh.pause && sh.pause!=="No"?`<span class="note">Pausa ${sh.pause}</span>`:""}`
     : `<span class="muted">${e.rest===d?'Riposo':'—'}</span>`;
 
   return `<td class="editable-cell" data-store="${storeId}" data-employee="${e.id}" data-day="${d}">${content}</td>`;
@@ -611,15 +701,16 @@ function cell(storeId,e,d){
 function renderDays(){
   const storeId=storeSelect.value||stores[0]?.id;
   const workers=employees.filter(e=>canWorkIn(e,storeId));
+  const dates=dayDatesOf(currentWeekKey);
 
-  storeDays.innerHTML=days.map(d=>{
+  storeDays.innerHTML=days.map((d,i)=>{
     const rows=workers.map(e=>[e,schedule[storeId]?.[e.id]?.[d]])
       .filter(x=>x[1])
       .sort((a,b)=>a[1].time.localeCompare(b[1].time))
-      .map(([e,s])=>`<div class="person editable-person" data-store="${storeId}" data-employee="${e.id}" data-day="${d}"><strong>${e.name}</strong><span>${s.time}</span></div>`)
+      .map(([e,s])=>`<div class="person editable-person" data-store="${storeId}" data-employee="${e.id}" data-day="${d}"><strong>${e.name}</strong><span>${s.time}${s.locked?" 🔒":""}</span></div>`)
       .join("");
 
-    return `<div class="day"><h3>${d}</h3>${rows||'<span class="muted">—</span>'}</div>`;
+    return `<div class="day"><h3>${d} ${dates[i].getDate()}</h3>${rows||'<span class="muted">—</span>'}</div>`;
   }).join("");
 
   document.querySelectorAll(".editable-person").forEach(item=>{
@@ -655,7 +746,7 @@ function editEmployee(id){
   empManualOnly.checked=!!e.manual;
   renderSecondaryStoreChecks(e.secondaryStoreIds||[]);
   if(e.fixedShifts){
-    buildFixedShiftFields(e.fixedSchedule||{});
+    buildFixedShiftFields(e.fixedSchedule||{}, e.rest||"");
   }
   employeeSubmitBtn.textContent="Aggiorna dipendente";
   employeeCancelBtn.style.display="inline-block";
@@ -776,6 +867,9 @@ function findGenericAssignmentForBand(storeId,day,band,preferSpecial){
     .forEach(e=>{
       const existing=schedule[storeId]?.[e.id]?.[day];
 
+      // Un turno bloccato non viene mai sostituito né rimpiazzato.
+      if(existing && existing.locked) return;
+
       if(existing && shiftCovers(existing,band)) return;
 
       if(!existing){
@@ -798,8 +892,14 @@ function findGenericAssignmentForBand(storeId,day,band,preferSpecial){
   if(!candidates.length) return null;
 
   candidates.sort((a,b)=>{
-    return workerPriority(a.employee,storeId)-workerPriority(b.employee,storeId)
-      || b.score-a.score
+    const pa=workerPriority(a.employee,storeId), pb=workerPriority(b.employee,storeId);
+    if(pa!==pb) return pa-pb;
+    // Stessa priorità: se è una copertura fuori dal negozio principale,
+    // ruota preferendo chi ha fatto meno trasferte finora questa settimana.
+    const awayA=a.employee.primaryStoreId!==storeId ? awayShiftCount(a.employee.id) : -1;
+    const awayB=b.employee.primaryStoreId!==storeId ? awayShiftCount(b.employee.id) : -1;
+    if(awayA!==awayB) return awayA-awayB;
+    return b.score-a.score
       || employeeTotal(a.employee.id)-employeeTotal(b.employee.id)
       || (Math.random()-0.5);
   });
@@ -816,6 +916,42 @@ function otherPresenceDuringPause(storeId,day,shift,excludeEmployeeId){
     if(!sh) return false;
     return (sh.segments||[]).some(seg=>overlaps(seg,pause));
   });
+}
+
+function storeWindow(store){
+  const starts=store.sessions.map(s=>toMin(s.start));
+  const ends=store.sessions.map(s=>toMin(s.end));
+  return {open:Math.min(...starts), close:Math.max(...ends)};
+}
+
+// Classifica un turno come "mattina" (orientato all'apertura) o "pomeriggio"
+// (orientato alla chiusura) in base a dove cade il suo baricentro rispetto
+// alla metà giornata del negozio. I turni centrali/spezzati sono "centro".
+function shiftDaypart(shift,store){
+  if(!shift || !(shift.segments||[]).length) return "centro";
+  const start=toMin(shift.segments[0].start);
+  const end=toMin(shift.segments[shift.segments.length-1].end);
+  const mid=(start+end)/2;
+  const {open,close}=storeWindow(store);
+  const storeMid=(open+close)/2;
+  if(mid < storeMid-30) return "mattina";
+  if(mid > storeMid+30) return "pomeriggio";
+  return "centro";
+}
+
+// Conta, nell'intera settimana del dipendente (tutti i negozi), quanti turni
+// di mattina e quanti di pomeriggio ha già.
+function employeeDaypartCounts(eid){
+  let m=0,p=0;
+  stores.forEach(st=>{
+    days.forEach(d=>{
+      const sh=schedule[st.id]?.[eid]?.[d];
+      if(!sh) return;
+      const part=shiftDaypart(sh,st);
+      if(part==="mattina") m++; else if(part==="pomeriggio") p++;
+    });
+  });
+  return {m,p};
 }
 
 function genericScore(storeId,day,band,e,shift,preferSpecial){
@@ -857,6 +993,17 @@ function genericScore(storeId,day,band,e,shift,preferSpecial){
     if(shift.workedHours===4) score += 10;
   }
 
+  // Varietà: bilancia mattina e pomeriggio nella settimana del dipendente,
+  // così non gli capitano sempre gli stessi orari. Premia il turno del tipo
+  // meno rappresentato finora; è una spinta secondaria, non scavalca la
+  // copertura (che vale molto di più).
+  const part=shiftDaypart(shift,store);
+  if(part==="mattina" || part==="pomeriggio"){
+    const {m,p}=employeeDaypartCounts(e.id);
+    const balance = part==="mattina" ? (p-m) : (m-p);
+    score += balance*25;
+  }
+
   return score;
 }
 
@@ -881,7 +1028,7 @@ function replacementPreservesCriticalCoverage(storeId,store,employeeId,day,newSh
 function completeMandatoryHoursForStore(storeId){
   const store=stores.find(s=>s.id===storeId);
   const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts && !e.manual);
-  const ordered=workers.slice().sort((a,b)=>workerPriority(a,storeId)-workerPriority(b,storeId));
+  const ordered=workers.slice().sort((a,b)=>workerPriority(a,storeId)-workerPriority(b,storeId) || (Math.random()-0.5));
 
   ordered.forEach(e=>{
     let guard=0;
@@ -932,7 +1079,7 @@ function reduceEmployeeHours(storeId,store,e){
 
   genDays.forEach(day=>{
     const current=schedule[storeId]?.[e.id]?.[day];
-    if(!current) return;
+    if(!current || current.locked) return;
 
     shiftOptionsForStore(store,e)
       .filter(opt=>opt.workedHours<current.workedHours)
@@ -1024,7 +1171,7 @@ function completeMandatoryHoursGlobal(){
   // Prima i dipendenti normali, poi gli Extra: così un Extra non "ruba"
   // uno slot di cui un dipendente normale ha davvero bisogno per arrivare
   // alle sue ore contrattuali.
-  const workers=employees.filter(e=>!e.fixedShifts && !e.manual).slice().sort((a,b)=>(a.isExtra?1:0)-(b.isExtra?1:0));
+  const workers=employees.filter(e=>!e.fixedShifts && !e.manual).slice().sort((a,b)=>(a.isExtra?1:0)-(b.isExtra?1:0) || (Math.random()-0.5));
 
   workers.forEach(e=>{
     let guard=0;
@@ -1044,7 +1191,7 @@ function reduceOnceAcrossStores(e){
   eligibleStoresOrdered(e).forEach(({store,rank:storeRank})=>{
     genDays.forEach(day=>{
       const current=schedule[store.id]?.[e.id]?.[day];
-      if(!current) return;
+      if(!current || current.locked) return;
 
       shiftOptionsForStore(store,e)
         .filter(opt=>opt.workedHours<current.workedHours)
@@ -1073,7 +1220,7 @@ function reduceEmployeeHoursGlobal(e){
 
 function repairAllCoverageForStore(storeId){
   const store=stores.find(s=>s.id===storeId);
-  genDays.forEach(day=>{
+  shuffledGenDays().forEach(day=>{
     if(!store.openDays.includes(day)) return;
     const bands=[
       ...(store.specialBands||[]).map(b=>({...b,min:Number(b.min||2),base:false})),
@@ -1113,7 +1260,7 @@ function minimizeResidualGapsForStore(storeId){
       const before=totalUncoveredMinutesForDay(storeId,day);
       if(before===0) break;
 
-      const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts && !e.manual && schedule[storeId]?.[e.id]?.[day]);
+      const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts && !e.manual && schedule[storeId]?.[e.id]?.[day] && !schedule[storeId][e.id][day].locked);
 
       for(const e of workers){
         const current=schedule[storeId][e.id][day];
@@ -1159,7 +1306,7 @@ function optimizePausePositionsForStore(storeId){
       const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts && !e.manual);
       for(const e of workers){
         const cur=schedule[storeId]?.[e.id]?.[day];
-        if(!cur || cur.workedHours!==8 || !cur.pauseStart || !cur.pauseEnd) continue;
+        if(!cur || cur.locked || cur.workedHours!==8 || !cur.pauseStart || !cur.pauseEnd) continue;
         if((cur.segments||[]).length!==2) continue;
 
         const startMin=toMin(cur.segments[0].start);
@@ -1342,7 +1489,7 @@ function addEmployee(e){
     weeklyHours:profile.id==="turno_fisso"?Object.values(fixedShifts).reduce((s,f)=>s+fixedShiftToShift(f).workedHours,0):Number(empHours.value),
     primaryStoreId:empPrimaryStore.value,
     secondaryStoreIds:secondary,
-    rest:profile.id==="extra_30"||profile.id==="turno_fisso"?"":empRest.value,
+    rest:profile.id==="extra_30"?"":(profile.id==="turno_fisso"?(document.getElementById("fixedRest")?.value||""):empRest.value),
     type:profile.type,
     pauseHours:(profile.id==="solo_6"||profile.id==="extra_30"||profile.id==="turno_fisso")?0:Number(empPause.value||0),
     profileId:profile.id,
@@ -1520,13 +1667,15 @@ function saveManualShift(event){
       return;
     }
 
-    schedule[storeId][newEmployeeId][day]=option;
+    // Turno impostato a mano: viene bloccato. La generazione lo preserva
+    // e ricalcola gli altri dipendenti attorno a questa scelta.
+    schedule[storeId][newEmployeeId][day]={...option,locked:true};
   }
 
   saveData();
   editShiftDialog.close();
   renderAll();
-  showNotice("Turno modificato. Avvisi ricalcolati.","ok");
+  showNotice("Turno bloccato. La generazione lavorerà attorno a questo turno.","ok");
 }
 
 function deleteManualShift(){
@@ -1544,8 +1693,121 @@ function deleteManualShift(){
   showNotice("Turno eliminato. Avvisi ricalcolati.","warn");
 }
 
+function exportWeekPng(){
+  const storeId=storeSelect.value||stores[0]?.id;
+  const store=stores.find(s=>s.id===storeId);
+  if(!store){showNotice("Nessun negozio selezionato.","warn");return;}
+  ensureSchedule();
+
+  const workers=employees.filter(e=>canWorkIn(e,storeId));
+  const dates=dayDatesOf(currentWeekKey);
+  const scale=2; // per un'immagine nitida
+
+  // Layout
+  const nameW=190, dayW=120, hoursW=90, rowH=54, headH=48, titleH=56, pad=24;
+  const cols=[nameW, ...days.map(()=>dayW), hoursW];
+  const tableW=cols.reduce((a,b)=>a+b,0);
+  const W=tableW+pad*2;
+  const H=titleH+headH+rowH*Math.max(workers.length,1)+pad*2;
+
+  const canvas=document.createElement("canvas");
+  canvas.width=W*scale; canvas.height=H*scale;
+  const ctx=canvas.getContext("2d");
+  ctx.scale(scale,scale);
+  ctx.textBaseline="middle";
+
+  // Sfondo
+  ctx.fillStyle="#ffffff";
+  ctx.fillRect(0,0,W,H);
+
+  // Titolo
+  ctx.fillStyle="#111111";
+  ctx.font="bold 20px Arial, sans-serif";
+  ctx.textAlign="left";
+  ctx.fillText(`${store.name} — ${formatWeekRange(currentWeekKey)}`, pad, pad+titleH/2);
+
+  const x0=pad, y0=pad+titleH;
+
+  // Intestazione colonne
+  ctx.fillStyle="#e8531f";
+  ctx.fillRect(x0,y0,tableW,headH);
+  ctx.fillStyle="#ffffff";
+  ctx.font="bold 14px Arial, sans-serif";
+  let cx=x0;
+  const headers=["Dipendente",...days.map((d,i)=>`${d} ${dates[i].getDate()}`),"Ore"];
+  headers.forEach((h,i)=>{
+    ctx.textAlign="center";
+    ctx.fillText(h, cx+cols[i]/2, y0+headH/2);
+    cx+=cols[i];
+  });
+
+  // Righe
+  workers.forEach((e,r)=>{
+    const ry=y0+headH+r*rowH;
+    if(r%2===1){ ctx.fillStyle="#f6f6f6"; ctx.fillRect(x0,ry,tableW,rowH); }
+
+    ctx.fillStyle="#111111";
+    ctx.font="bold 13px Arial, sans-serif";
+    ctx.textAlign="left";
+    ctx.fillText(e.name, x0+10, ry+rowH/2);
+
+    let dx=x0+nameW;
+    days.forEach(d=>{
+      const sh=schedule[storeId]?.[e.id]?.[d];
+      ctx.textAlign="center";
+      if(sh){
+        ctx.fillStyle="#111111";
+        ctx.font="bold 12px Arial, sans-serif";
+        ctx.fillText(sh.time, dx+dayW/2, ry+rowH/2-(sh.pause&&sh.pause!=="No"?8:0));
+        if(sh.pause&&sh.pause!=="No"){
+          ctx.fillStyle="#777777";
+          ctx.font="11px Arial, sans-serif";
+          ctx.fillText("pausa "+sh.pause, dx+dayW/2, ry+rowH/2+10);
+        }
+      }else{
+        ctx.fillStyle="#bbbbbb";
+        ctx.font="12px Arial, sans-serif";
+        ctx.fillText(e.rest===d?"Riposo":"—", dx+dayW/2, ry+rowH/2);
+      }
+      dx+=dayW;
+    });
+
+    const tot=employeeTotal(e.id);
+    ctx.fillStyle=tot>e.weeklyHours?"#c0392b":"#111111";
+    ctx.font="bold 13px Arial, sans-serif";
+    ctx.textAlign="center";
+    ctx.fillText(`${tot}/${e.weeklyHours}h`, dx+hoursW/2, ry+rowH/2);
+  });
+
+  // Griglia
+  ctx.strokeStyle="#dddddd";
+  ctx.lineWidth=1;
+  const bottomY=y0+headH+rowH*workers.length;
+  let gx=x0;
+  cols.forEach(w=>{ ctx.beginPath(); ctx.moveTo(gx,y0); ctx.lineTo(gx,bottomY); ctx.stroke(); gx+=w; });
+  ctx.beginPath(); ctx.moveTo(gx,y0); ctx.lineTo(gx,bottomY); ctx.stroke();
+  for(let r=0;r<=workers.length;r++){
+    const ly=y0+headH+r*rowH;
+    ctx.beginPath(); ctx.moveTo(x0,ly); ctx.lineTo(x0+tableW,ly); ctx.stroke();
+  }
+  ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x0+tableW,y0); ctx.stroke();
+
+  canvas.toBlob(blob=>{
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;
+    a.download=`animalmania-${slug(store.name)}-${currentWeekKey}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showNotice("Immagine settimana scaricata.","ok");
+  },"image/png");
+}
+
 function exportBackup(){
-  const data={stores,employees,schedule,exportedAt:new Date().toISOString()};
+  saveData();
+  const data={stores,employees,schedules,week:currentWeekKey,exportedAt:new Date().toISOString()};
   const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a");
@@ -1569,7 +1831,9 @@ function importBackupFile(file){
       return;
     }
 
-    if(!Array.isArray(data.stores) || !Array.isArray(data.employees) || typeof data.schedule!=="object" || !data.schedule){
+    const hasSchedules=data.schedules && typeof data.schedules==="object";
+    const hasLegacy=data.schedule && typeof data.schedule==="object";
+    if(!Array.isArray(data.stores) || !Array.isArray(data.employees) || (!hasSchedules && !hasLegacy)){
       showNotice("File non valido: struttura dati non riconosciuta.","warn");
       return;
     }
@@ -1578,8 +1842,18 @@ function importBackupFile(file){
 
     stores=data.stores;
     employees=data.employees;
-    schedule=data.schedule;
     normalizeLegacyEmployees();
+
+    if(hasSchedules){
+      schedules=data.schedules;
+      currentWeekKey=(data.week && schedules[data.week])?data.week:(Object.keys(schedules)[0]||weekKeyOf(new Date()));
+    }else{
+      // Vecchio backup a settimana unica: lo avvolgo nella settimana corrente.
+      currentWeekKey=weekKeyOf(new Date());
+      schedules={[currentWeekKey]:data.schedule};
+    }
+    if(!schedules[currentWeekKey]) schedules[currentWeekKey]=emptySchedule();
+    schedule=schedules[currentWeekKey];
     ensureSchedule();
     saveData();
     renderAll();
@@ -1688,7 +1962,11 @@ btnGenerateSelected.onclick=()=>{
 };
 storeSelect.onchange=()=>{renderWeek();renderTurniIssues();};
 btnSave.onclick=()=>{saveData();showNotice("Salvato","ok");};
-btnClear.onclick=()=>{schedule=emptySchedule();saveData();renderAll();showNotice("Turni svuotati","warn");};
+btnClear.onclick=()=>{schedules[currentWeekKey]=emptySchedule();schedule=schedules[currentWeekKey];saveData();renderAll();showNotice("Turni svuotati","warn");};
+btnPrevWeek.onclick=()=>setWeek(addWeeks(currentWeekKey,-1));
+btnNextWeek.onclick=()=>setWeek(addWeeks(currentWeekKey,1));
+btnToday.onclick=()=>setWeek(weekKeyOf(new Date()));
+btnExportPng.onclick=exportWeekPng;
 storeForm.onsubmit=addStore;
 employeeForm.onsubmit=addEmployee;
 btnAddSpecialBand.onclick=addSpecialBandRow;
