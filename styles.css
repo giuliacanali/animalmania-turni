@@ -315,3 +315,46 @@ table.dash-week td { text-align: center; }
 .leave-info { flex: 1; display: grid; gap: 2px; }
 .leave-info span { color: var(--muted); font-size: 12px; }
 #leaveHoursRow { display: none; }
+
+/* V22 login / accessi */
+#loginGate {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: var(--bg);
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+body.locked #loginGate { display: flex; }
+body.locked { overflow: hidden; }
+.login-card {
+  width: min(360px, 92vw);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  box-shadow: var(--shadow);
+  padding: 28px 24px;
+  display: grid;
+  gap: 12px;
+  text-align: center;
+}
+.login-brand {
+  background: #222;
+  border-radius: 18px;
+  padding: 14px;
+  margin: 0 auto 6px;
+  width: 160px;
+}
+.login-brand img { width: 100%; display: block; }
+.login-card h2 { margin: 0; }
+.login-card p { margin: 0; }
+.login-card input { text-align: center; }
+.login-card .primary { margin-top: 4px; }
+.login-error { color: var(--danger); font-weight: 800; font-size: 13px; min-height: 16px; }
+#btnLogout { color: var(--danger); }
+.access-current { margin-bottom: 10px; }
+.access-current strong { font-family: ui-monospace, Menlo, monospace; background: var(--soft); color: var(--orange); padding: 3px 8px; border-radius: 8px; }
+.access-note p { color: var(--muted); margin: 0; }
+.access-note code { background: #f0ede9; padding: 1px 5px; border-radius: 5px; }

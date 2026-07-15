@@ -2275,12 +2275,57 @@ function importBackupFile(file){
 function setView(v){
   document.querySelectorAll(".nav").forEach(n=>n.classList.toggle("active",n.dataset.view===v));
   document.querySelectorAll(".view").forEach(s=>s.classList.toggle("active",s.id===v));
-  title.textContent={dashboard:"Dashboard",turni:"Turni",mioturno:"Il mio turno",dipendenti:"Dipendenti",ferie:"Ferie",negozi:"Negozi"}[v];
-  subtitle.textContent={dashboard:"Panoramica della settimana.",turni:"Vista settimanale per negozio.",mioturno:"Scegli il tuo nome e vedi solo i tuoi turni.",dipendenti:"Gestione personale.",ferie:"Ferie, permessi e malattia dei dipendenti.",negozi:"Gestione punti vendita."}[v];
+  title.textContent={dashboard:"Dashboard",turni:"Turni",mioturno:"Il mio turno",dipendenti:"Dipendenti",ferie:"Ferie",negozi:"Negozi",accessi:"Accessi"}[v];
+  subtitle.textContent={dashboard:"Panoramica della settimana.",turni:"Vista settimanale per negozio.",mioturno:"Scegli il tuo nome e vedi solo i tuoi turni.",dipendenti:"Gestione personale.",ferie:"Ferie, permessi e malattia dei dipendenti.",negozi:"Gestione punti vendita.",accessi:"Gestione password di accesso."}[v];
 
   // Nella vista dipendente nascondi il pulsante di generazione globale:
   // è una schermata di sola consultazione.
-  if(typeof btnGenerateAll!=="undefined") btnGenerateAll.style.display = v==="mioturno" ? "none" : "";
+  if(typeof btnGenerateAll!=="undefined") btnGenerateAll.style.display = (v==="mioturno" || currentRole()==="employee") ? "none" : "";
+}
+
+// --- Autenticazione semplice a due ruoli (admin / dipendente) ---
+// Le password "di partenza" arrivano da auth-config.js (valide per tutti);
+// l'admin può sovrascriverle su questo dispositivo dal pannello Accessi.
+function effAdminPw(){ return localStorage.getItem("am134_pw_admin") || (window.AM_AUTH&&AM_AUTH.adminPassword) || "admin"; }
+function effEmpPw(){ return localStorage.getItem("am134_pw_emp") || (window.AM_AUTH&&AM_AUTH.employeePassword) || "dipendente"; }
+function currentRole(){ return localStorage.getItem("am134_role"); }
+function tryLogin(pw){
+  if(pw && pw===effAdminPw()){ localStorage.setItem("am134_role","admin"); return "admin"; }
+  if(pw && pw===effEmpPw()){ localStorage.setItem("am134_role","employee"); return "employee"; }
+  return null;
+}
+function logout(){ localStorage.removeItem("am134_role"); applyAuthGate(); }
+
+// Mostra/nasconde la schermata di login e applica i permessi del ruolo.
+function applyAuthGate(){
+  const gate=document.getElementById("loginGate");
+  const role=currentRole();
+  if(!role){
+    document.body.classList.add("locked");
+    if(gate) gate.style.display="flex";
+    return;
+  }
+  if(gate) gate.style.display="none";
+  document.body.classList.remove("locked");
+  applyRoleRestrictions(role);
+}
+
+function applyRoleRestrictions(role){
+  const isEmp = role==="employee";
+  // Il dipendente vede solo "Il mio turno".
+  document.querySelectorAll(".nav").forEach(n=>{
+    n.style.display = (!isEmp || n.dataset.view==="mioturno") ? "" : "none";
+  });
+  const exp=document.getElementById("btnExportBackup"), imp=document.getElementById("btnImportBackup");
+  if(exp) exp.style.display = isEmp ? "none" : "";
+  if(imp) imp.style.display = isEmp ? "none" : "";
+  if(typeof btnGenerateAll!=="undefined") btnGenerateAll.style.display = isEmp ? "none" : "";
+  if(isEmp && document.querySelector(".view.active")?.id!=="mioturno") setView("mioturno");
+}
+
+function renderAccessi(){
+  const cur=document.getElementById("curEmpPw");
+  if(cur) cur.textContent=effEmpPw();
 }
 
 
@@ -2364,6 +2409,7 @@ function renderAll(){
   renderStores();
   renderProfiles();
   renderLeaves();
+  renderAccessi();
   renderDashboard();
 }
 
@@ -2440,8 +2486,43 @@ if(typeof editEmployeeSelect!=="undefined"){
   btnCancelEdit.onclick=()=>editShiftDialog.close();
 }
 
+// Login / logout / gestione password
+if(typeof loginForm!=="undefined"){
+  loginForm.onsubmit=e=>{
+    e.preventDefault();
+    const pwInput=document.getElementById("loginPassword");
+    const err=document.getElementById("loginError");
+    const r=tryLogin(pwInput.value);
+    if(!r){ if(err) err.textContent="Password errata."; return; }
+    if(err) err.textContent="";
+    pwInput.value="";
+    applyAuthGate();
+    setView(r==="employee" ? "mioturno" : "dashboard");
+    document.querySelector(".sidebar")?.classList.remove("open");
+  };
+}
+if(typeof btnLogout!=="undefined") btnLogout.onclick=logout;
+if(typeof empPwForm!=="undefined") empPwForm.onsubmit=e=>{
+  e.preventDefault();
+  const v=document.getElementById("newEmpPw").value.trim();
+  if(!v){ showNotice("Inserisci una password.","warn"); return; }
+  localStorage.setItem("am134_pw_emp",v);
+  document.getElementById("newEmpPw").value="";
+  renderAccessi();
+  showNotice("Password dipendenti aggiornata (su questo dispositivo).","ok");
+};
+if(typeof adminPwForm!=="undefined") adminPwForm.onsubmit=e=>{
+  e.preventDefault();
+  const v=document.getElementById("newAdminPw").value.trim();
+  if(!v){ showNotice("Inserisci una password.","warn"); return; }
+  localStorage.setItem("am134_pw_admin",v);
+  document.getElementById("newAdminPw").value="";
+  showNotice("Password admin aggiornata (su questo dispositivo).","ok");
+};
+
 pauseVisibility();
 if(typeof empProfile!=="undefined") applySelectedProfile();
 employeeCancelBtn.style.display='none';
 storeCancelBtn.style.display='none';
 renderAll();
+applyAuthGate();

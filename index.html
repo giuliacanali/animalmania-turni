@@ -4,9 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Animalmania Turni</title>
-  <link rel="stylesheet" href="styles.css?v=21">
+  <link rel="stylesheet" href="styles.css?v=22">
 </head>
-<body>
+<body class="locked">
+  <div id="loginGate">
+    <form id="loginForm" class="login-card">
+      <div class="login-brand"><img src="logo-animalmania.webp" alt="Animalmania"></div>
+      <h2>Accesso</h2>
+      <p>Inserisci la password per entrare.</p>
+      <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password" required>
+      <div id="loginError" class="login-error"></div>
+      <button class="primary" type="submit">Entra</button>
+    </form>
+  </div>
+
   <aside class="sidebar">
     <div class="brand"><img src="logo-animalmania.webp" alt="Animalmania"></div>
     <button class="nav-toggle" id="navToggle" aria-label="Apri menu">☰ Menu</button>
@@ -16,11 +27,13 @@
     <button class="nav" data-view="dipendenti">Dipendenti</button>
     <button class="nav" data-view="ferie">Ferie</button>
     <button class="nav" data-view="negozi">Negozi</button>
+    <button class="nav" data-view="accessi" id="navAccessi">Accessi</button>
 
     <div class="sidebar-backup">
       <button id="btnExportBackup" title="Scarica un file con negozi, dipendenti e turni attuali">Esporta backup</button>
       <button id="btnImportBackup" title="Carica un file di backup esportato in precedenza">Importa backup</button>
       <input type="file" id="importBackupInput" accept="application/json" hidden>
+      <button id="btnLogout" title="Esci dall'account">Esci</button>
     </div>
   </aside>
 
@@ -263,6 +276,33 @@
         <div class="storecards" id="storeCards"></div>
       </div>
     </section>
+
+    <section id="accessi" class="view">
+      <div class="grid2">
+        <article class="panel">
+          <h2>Password dipendenti</h2>
+          <p>I dipendenti entrano con questa password, poi scelgono il proprio nome in “Il mio turno”.</p>
+          <div class="access-current">Password attuale: <strong id="curEmpPw">—</strong></div>
+          <form id="empPwForm" class="form">
+            <label>Nuova password dipendenti<input id="newEmpPw" placeholder="Nuova password"></label>
+            <button class="primary" type="submit">Aggiorna password dipendenti</button>
+          </form>
+        </article>
+
+        <article class="panel">
+          <h2>Password admin</h2>
+          <p>La tua password di amministratore (accesso completo).</p>
+          <form id="adminPwForm" class="form">
+            <label>Nuova password admin<input id="newAdminPw" placeholder="Nuova password"></label>
+            <button class="primary" type="submit">Aggiorna password admin</button>
+          </form>
+        </article>
+      </div>
+
+      <article class="panel access-note">
+        <p><strong>Nota:</strong> le modifiche alle password valgono su questo dispositivo. Per cambiarle per tutti i dispositivi in modo permanente, aggiorna le password di partenza nel sito (chiedi allo sviluppatore o modifica <code>auth-config.js</code>).</p>
+      </article>
+    </section>
   </main>
 
 
@@ -301,7 +341,8 @@
     </form>
   </dialog>
 
-  <script src="seed-data.js?v=21"></script>
-  <script src="app.js?v=21"></script>
+  <script src="auth-config.js?v=22"></script>
+  <script src="seed-data.js?v=22"></script>
+  <script src="app.js?v=22"></script>
 </body>
 </html>
