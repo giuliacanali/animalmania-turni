@@ -100,8 +100,8 @@ dialog::backdrop {
 
 /* V14 backup dati */
 .sidebar-backup {
-  margin-top: auto;
-  padding-top: 14px;
+  margin-top: 12px;
+  padding-top: 12px;
   border-top: 1px solid var(--line);
   display: grid;
   gap: 8px;
