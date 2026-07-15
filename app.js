@@ -56,8 +56,17 @@ function normalizeLegacyEmployees(){
   });
 }
 
-let stores=JSON.parse(localStorage.getItem("am134_stores")||JSON.stringify(defaults.stores));
-let employees=JSON.parse(localStorage.getItem("am134_employees")||JSON.stringify(defaults.employees));
+// Al primo avvio (localStorage vuoto) si parte dal seed precaricato
+// (window.AM_SEED, definito in seed-data.js) così chi apre il link ha già
+// negozi, dipendenti e turni senza dover importare nulla. Chi ha già dati
+// propri in localStorage non viene toccato.
+const AM_SEED=(typeof window!=="undefined" && window.AM_SEED) ? window.AM_SEED : null;
+function seedClone(v){ return v==null ? null : JSON.parse(JSON.stringify(v)); }
+const seedStores=(AM_SEED && AM_SEED.stores) ? AM_SEED.stores : defaults.stores;
+const seedEmployees=(AM_SEED && AM_SEED.employees) ? AM_SEED.employees : defaults.employees;
+
+let stores=JSON.parse(localStorage.getItem("am134_stores")||"null") || seedClone(seedStores);
+let employees=JSON.parse(localStorage.getItem("am134_employees")||"null") || seedClone(seedEmployees);
 normalizeLegacyEmployees();
 function loadSchedules(){
   const stored=JSON.parse(localStorage.getItem("am134_schedules")||"null");
@@ -65,11 +74,12 @@ function loadSchedules(){
   // Migrazione dal vecchio formato a settimana unica.
   const legacy=JSON.parse(localStorage.getItem("am134_schedule")||"null");
   if(legacy && typeof legacy==="object") return {[weekKeyOf(new Date())]:legacy};
+  if(AM_SEED && AM_SEED.schedules) return seedClone(AM_SEED.schedules); // seed iniziale
   return {};
 }
 
 let schedules=loadSchedules();
-let currentWeekKey=localStorage.getItem("am134_week")||weekKeyOf(new Date());
+let currentWeekKey=localStorage.getItem("am134_week") || (AM_SEED && AM_SEED.week) || weekKeyOf(new Date());
 if(!schedules[currentWeekKey]) schedules[currentWeekKey]=emptySchedule();
 let schedule=schedules[currentWeekKey];
 let suppressAutoRender = false;
