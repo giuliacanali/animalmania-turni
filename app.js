@@ -2283,18 +2283,79 @@ function setView(v){
   if(typeof btnGenerateAll!=="undefined") btnGenerateAll.style.display = (v==="mioturno" || currentRole()==="employee") ? "none" : "";
 }
 
-// --- Autenticazione semplice a due ruoli (admin / dipendente) ---
-// Le password "di partenza" arrivano da auth-config.js (valide per tutti);
-// l'admin può sovrascriverle su questo dispositivo dal pannello Accessi.
+// --- Autenticazione a due ruoli (admin / dipendente) ---
+// Due modalità:
+//  • backend collegato (livello A): le password stanno sul server (/api/auth)
+//    e valgono per tutti i dispositivi;
+//  • fallback locale: se il backend non c'è, si usano le password di
+//    auth-config.js e il ruolo salvato in localStorage (nessun blocco).
+let authBackend=false;   // true se /api/auth risponde con backend attivo
+let authRole=null;       // ruolo corrente in memoria
+let authEmpPw=null;      // password dipendenti (per il pannello Accessi, solo backend)
+
 function effAdminPw(){ return localStorage.getItem("am134_pw_admin") || (window.AM_AUTH&&AM_AUTH.adminPassword) || "admin"; }
 function effEmpPw(){ return localStorage.getItem("am134_pw_emp") || (window.AM_AUTH&&AM_AUTH.employeePassword) || "dipendente"; }
-function currentRole(){ return localStorage.getItem("am134_role"); }
-function tryLogin(pw){
-  if(pw && pw===effAdminPw()){ localStorage.setItem("am134_role","admin"); return "admin"; }
-  if(pw && pw===effEmpPw()){ localStorage.setItem("am134_role","employee"); return "employee"; }
+function currentRole(){ return authRole; }
+function tryLoginLocal(pw){
+  if(pw && pw===effAdminPw()) return "admin";
+  if(pw && pw===effEmpPw()) return "employee";
   return null;
 }
-function logout(){ localStorage.removeItem("am134_role"); applyAuthGate(); }
+
+// Legge lo stato di sessione dal server (o passa al fallback locale).
+async function refreshSession(){
+  try{
+    const r=await fetch("/api/auth?action=session",{headers:{Accept:"application/json"}});
+    if(r.ok){
+      const d=await r.json();
+      if(d.backend){
+        authBackend=true;
+        authRole=d.role||null;
+        authEmpPw=d.employeePassword||null;
+        return;
+      }
+    }
+  }catch(e){/* nessun backend: fallback locale */}
+  authBackend=false;
+  authRole=localStorage.getItem("am134_role")||null;
+  authEmpPw=null;
+}
+
+async function doLogin(pw){
+  if(authBackend){
+    try{
+      const r=await fetch("/api/auth",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"login",password:pw})});
+      if(r.status===401) return null;
+      if(r.ok){ const d=await r.json(); authRole=d.role; await refreshSession(); return d.role; }
+    }catch(e){/* cade al locale */}
+  }
+  const role=tryLoginLocal(pw);
+  if(role){ authRole=role; localStorage.setItem("am134_role",role); }
+  return role;
+}
+
+async function logout(){
+  if(authBackend){ try{ await fetch("/api/auth",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"logout"})}); }catch(e){} }
+  authRole=null;
+  localStorage.removeItem("am134_role");
+  applyAuthGate();
+}
+
+// Aggiorna una password (server se disponibile, altrimenti locale).
+// Ritorna "all" (vale per tutti) o "device" (solo questo dispositivo).
+async function saveCredential(which, value){
+  if(authBackend){
+    const body={action:"set-credentials"};
+    if(which==="admin") body.adminPassword=value; else body.employeePassword=value;
+    const r=await fetch("/api/auth",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(!r.ok) throw new Error("save failed");
+    await refreshSession();
+    return "all";
+  }
+  if(which==="admin") localStorage.setItem("am134_pw_admin",value);
+  else localStorage.setItem("am134_pw_emp",value);
+  return "device";
+}
 
 // Mostra/nasconde la schermata di login e applica i permessi del ruolo.
 function applyAuthGate(){
@@ -2325,7 +2386,11 @@ function applyRoleRestrictions(role){
 
 function renderAccessi(){
   const cur=document.getElementById("curEmpPw");
-  if(cur) cur.textContent=effEmpPw();
+  if(cur) cur.textContent = authBackend ? (authEmpPw||"—") : effEmpPw();
+  const scope=document.getElementById("accessScope");
+  if(scope) scope.textContent = authBackend
+    ? "Backend attivo: le modifiche valgono per tutti i dispositivi."
+    : "Backend non collegato: le modifiche valgono solo su questo dispositivo.";
 }
 
 
@@ -2488,36 +2553,44 @@ if(typeof editEmployeeSelect!=="undefined"){
 
 // Login / logout / gestione password
 if(typeof loginForm!=="undefined"){
-  loginForm.onsubmit=e=>{
+  loginForm.onsubmit=async e=>{
     e.preventDefault();
     const pwInput=document.getElementById("loginPassword");
     const err=document.getElementById("loginError");
-    const r=tryLogin(pwInput.value);
+    const btn=loginForm.querySelector("button[type=submit]");
+    if(btn) btn.disabled=true;
+    const r=await doLogin(pwInput.value);
+    if(btn) btn.disabled=false;
     if(!r){ if(err) err.textContent="Password errata."; return; }
     if(err) err.textContent="";
     pwInput.value="";
     applyAuthGate();
+    renderAccessi();
     setView(r==="employee" ? "mioturno" : "dashboard");
     document.querySelector(".sidebar")?.classList.remove("open");
   };
 }
 if(typeof btnLogout!=="undefined") btnLogout.onclick=logout;
-if(typeof empPwForm!=="undefined") empPwForm.onsubmit=e=>{
+if(typeof empPwForm!=="undefined") empPwForm.onsubmit=async e=>{
   e.preventDefault();
   const v=document.getElementById("newEmpPw").value.trim();
   if(!v){ showNotice("Inserisci una password.","warn"); return; }
-  localStorage.setItem("am134_pw_emp",v);
-  document.getElementById("newEmpPw").value="";
-  renderAccessi();
-  showNotice("Password dipendenti aggiornata (su questo dispositivo).","ok");
+  try{
+    const scope=await saveCredential("emp",v);
+    document.getElementById("newEmpPw").value="";
+    renderAccessi();
+    showNotice(scope==="all" ? "Password dipendenti aggiornata per tutti i dispositivi." : "Password dipendenti aggiornata (solo su questo dispositivo).","ok");
+  }catch(err){ showNotice("Errore nell'aggiornare la password.","warn"); }
 };
-if(typeof adminPwForm!=="undefined") adminPwForm.onsubmit=e=>{
+if(typeof adminPwForm!=="undefined") adminPwForm.onsubmit=async e=>{
   e.preventDefault();
   const v=document.getElementById("newAdminPw").value.trim();
   if(!v){ showNotice("Inserisci una password.","warn"); return; }
-  localStorage.setItem("am134_pw_admin",v);
-  document.getElementById("newAdminPw").value="";
-  showNotice("Password admin aggiornata (su questo dispositivo).","ok");
+  try{
+    const scope=await saveCredential("admin",v);
+    document.getElementById("newAdminPw").value="";
+    showNotice(scope==="all" ? "Password admin aggiornata per tutti i dispositivi." : "Password admin aggiornata (solo su questo dispositivo).","ok");
+  }catch(err){ showNotice("Errore nell'aggiornare la password.","warn"); }
 };
 
 pauseVisibility();
@@ -2525,4 +2598,4 @@ if(typeof empProfile!=="undefined") applySelectedProfile();
 employeeCancelBtn.style.display='none';
 storeCancelBtn.style.display='none';
 renderAll();
-applyAuthGate();
+refreshSession().then(()=>{ applyAuthGate(); renderAccessi(); });
