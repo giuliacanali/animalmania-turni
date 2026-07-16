@@ -1,6 +1,12 @@
 const defaults={"stores": [{"id": "pindaro", "name": "Pindaro", "openDays": ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab"], "sessions": [{"start": "09:00", "end": "20:00"}], "specialBands": [{"start": "09:00", "end": "10:00", "min": 2}, {"start": "14:00", "end": "16:00", "min": 2}, {"start": "19:00", "end": "20:00", "min": 2}]}, {"id": "ostiense", "name": "Ostiense", "openDays": ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab"], "sessions": [{"start": "09:00", "end": "20:00"}], "specialBands": [{"start": "09:00", "end": "10:00", "min": 2}, {"start": "14:00", "end": "16:00", "min": 2}, {"start": "19:00", "end": "20:00", "min": 2}]}], "employees": [{"id": "silvia", "name": "Silvia Casalinuovo", "weeklyHours": 40, "primaryStoreId": "pindaro", "secondaryStoreIds": [], "rest": "", "type": "6-8", "pauseHours": 1}, {"id": "luca_b", "name": "Luca Ballanti", "weeklyHours": 40, "primaryStoreId": "pindaro", "secondaryStoreIds": [], "rest": "Mer", "type": "8", "pauseHours": 1}, {"id": "leonardo", "name": "Leonardo Barbato", "weeklyHours": 40, "primaryStoreId": "pindaro", "secondaryStoreIds": [], "rest": "Mar", "type": "8", "pauseHours": 1}, {"id": "sofia", "name": "Sofia Tomei", "weeklyHours": 40, "primaryStoreId": "pindaro", "secondaryStoreIds": [], "rest": "", "type": "6-8", "pauseHours": 1}, {"id": "giulia_n", "name": "Giulia Nitrola", "weeklyHours": 40, "primaryStoreId": "pindaro", "secondaryStoreIds": [], "rest": "Lun", "type": "8", "pauseHours": 1}, {"id": "giorgia", "name": "Giorgia Quacquarelli", "weeklyHours": 40, "primaryStoreId": "ostiense", "secondaryStoreIds": [], "rest": "Gio", "type": "8", "pauseHours": 1}, {"id": "manuel", "name": "Manuel Esposito", "weeklyHours": 40, "primaryStoreId": "ostiense", "secondaryStoreIds": [], "rest": "Mer", "type": "8", "pauseHours": 1}, {"id": "simone", "name": "Simone Bindi", "weeklyHours": 40, "primaryStoreId": "ostiense", "secondaryStoreIds": [], "rest": "Lun", "type": "8", "pauseHours": 1}, {"id": "luca_g", "name": "Luca Grimaldi", "weeklyHours": 40, "primaryStoreId": "ostiense", "secondaryStoreIds": [], "rest": "Ven", "type": "8", "pauseHours": 1}, {"id": "verena", "name": "Verena Loi", "weeklyHours": 36, "primaryStoreId": "ostiense", "secondaryStoreIds": [], "rest": "", "type": "6", "pauseHours": 0}]};
 const days=["Lun","Mar","Mer","Gio","Ven","Sab","Dom"];
 const genDays=["Lun","Mar","Mer","Gio","Ven","Sab"];
+// Pausa lunga per il turno spezzato: usata SOLO per coprire buchi/fasce
+// speciali. Entra nei negozi aperti 11h (8h lavoro + 3h pausa = 11h).
+const LONG_PAUSE_HOURS=3;
+// Ogni tratto di lavoro di un turno spezzato dura almeno queste ore, per
+// evitare spezzati assurdi tipo 1h + 7h.
+const MIN_SPLIT_SEGMENT=3;
 
 const monthsLong=["gennaio","febbraio","marzo","aprile","maggio","giugno","luglio","agosto","settembre","ottobre","novembre","dicembre"];
 const monthsShort=["gen","feb","mar","apr","mag","giu","lug","ago","set","ott","nov","dic"];
@@ -469,6 +475,29 @@ function buildEightHourContinuousVariants(startMin,pauseHours){
   }
 
   return variants;
+}
+
+// Turni spezzati da 8h con pausa lunga (es. 3h): 8h lavorate ma con uno
+// stacco lungo in mezzo, per coprire apertura + chiusura lasciando il centro
+// giornata ai colleghi. Genera tutte le posizioni valide a ogni orario di
+// inizio che entra nell'orario del negozio. Solo negozi a sessione unica
+// (continuati) e per chi può fare le 8h; i negozi già spezzati non servono.
+function buildSplitShiftVariants(store,e,pauseHours){
+  if(!store || (store.sessions||[]).length!==1) return [];
+  if(!allowedHours(e).includes(8)) return [];
+  const sess=store.sessions[0];
+  const sStart=toMin(sess.start), sEnd=toMin(sess.end);
+  const presence=(8+pauseHours)*60;
+  const minSeg=MIN_SPLIT_SEGMENT*60; // ogni tratto di lavoro almeno 3h
+  const out=[];
+  for(let start=sStart; start+presence<=sEnd; start+=30){
+    buildEightHourContinuousVariants(start,pauseHours).forEach(v=>{
+      const s1=toMin(v.segments[0].end)-toMin(v.segments[0].start);
+      const s2=toMin(v.segments[1].end)-toMin(v.segments[1].start);
+      if(s1>=minSeg && s2>=minSeg && isShiftInsideStore(v,store)) out.push(v);
+    });
+  }
+  return out;
 }
 
 function shiftCovers(sh,band){
@@ -1665,10 +1694,13 @@ function minimizeResidualGapsForStore(storeId){
   });
 }
 
-// Ottimizza SOLO la posizione della pausa dei turni da 8h già assegnati:
-// stessa finestra di presenza e stesse ore, ma la pausa viene spostata
-// nell'orario che lascia il negozio meno scoperto (es. quando c'è un
-// collega presente). Non cambia chi lavora né quando entra/esce.
+// Ottimizza i turni da 8h già assegnati per lasciare il negozio meno scoperto,
+// SENZA cambiare le ore lavorate (restano 8):
+//  1) sposta la pausa da 1h in una posizione migliore (stessa finestra);
+//  2) se serve, ALLUNGA la pausa a 3h (turno spezzato) per coprire apertura
+//     e chiusura lasciando il centro ai colleghi.
+// Ogni scambio è accettato solo se riduce i minuti scoperti della giornata,
+// quindi non può mai peggiorare la copertura.
 function optimizePausePositionsForStore(storeId){
   const store=stores.find(s=>s.id===storeId);
   genDays.forEach(day=>{
@@ -1690,8 +1722,15 @@ function optimizePausePositionsForStore(storeId){
 
         const startMin=toMin(cur.segments[0].start);
         const pauseHours=(toMin(cur.pauseEnd)-toMin(cur.pauseStart))/60;
-        const variants=buildEightHourContinuousVariants(startMin,pauseHours)
-          .filter(v=>isShiftInsideStore(v,store) && v.pauseStart!==cur.pauseStart);
+        // Riposizionamenti della pausa attuale + turni spezzati con pausa lunga
+        // (usati solo se migliorano la copertura). Escludo il turno attuale e
+        // quelli in conflitto con eventuali assenze.
+        const variants=[
+          ...buildEightHourContinuousVariants(startMin,pauseHours),
+          ...buildSplitShiftVariants(store,e,LONG_PAUSE_HOURS)
+        ].filter(v=>isShiftInsideStore(v,store))
+         .filter(v=>v.time!==cur.time || v.pause!==cur.pause)
+         .filter(v=>!shiftConflictsWithLeave(e,day,v));
 
         let swapped=false;
         for(const v of variants){
@@ -1979,11 +2018,8 @@ function openShiftEditor(storeId, employeeId, day){
   refreshEditShiftOptions();
 
   const current=schedule[storeId]?.[employeeId]?.[day];
-  if(current){
-    const match=[...editShiftSelect.options].find(o=>o.dataset.time===current.time && o.dataset.pause===current.pause)
-      || [...editShiftSelect.options].find(o=>o.dataset.time===current.time);
-    if(match) editShiftSelect.value=match.value;
-  }
+  editShiftSelect.value="";
+  prefillEditorCustom(current||null);
 
   editShiftDialog.showModal();
 }
@@ -1996,10 +2032,55 @@ function refreshEditShiftOptions(){
   if(!store||!employee) return;
 
   const opts=shiftOptionsForEditor(store,employee);
-  editShiftSelect.innerHTML=`<option value="">— Nessun turno —</option>`+opts.map((opt,i)=>{
+  editShiftSelect.innerHTML=`<option value="">— scegli un modello —</option>`+opts.map((opt,i)=>{
     const pause=(opt.pause&&opt.pause!=="No")?` · Pausa ${opt.pause}`:"";
     return `<option value="${i}" data-time="${opt.time}" data-pause="${opt.pause}">${opt.time}${pause} · ${opt.workedHours}h</option>`;
   }).join("");
+}
+
+// Costruisce un turno dagli orari liberi (dalle/alle + pausa), come il turno
+// fisso. Se manca tutto ritorna null (nessun turno).
+function buildManualShift(start,end,pauseStart,pauseEnd){
+  if(!start && !end) return null;
+  if(!start || !end) throw new Error("Completa inizio e fine del turno.");
+  if(toMin(end)<=toMin(start)) throw new Error("L'ora di fine deve essere dopo l'inizio.");
+  const hasPause=!!(pauseStart && pauseEnd);
+  if(hasPause){
+    if(!(toMin(start)<toMin(pauseStart) && toMin(pauseStart)<toMin(pauseEnd) && toMin(pauseEnd)<toMin(end)))
+      throw new Error("La pausa deve stare dentro il turno, con lavoro prima e dopo.");
+  }
+  const segments=hasPause ? [{start,end:pauseStart},{start:pauseEnd,end}] : [{start,end}];
+  const worked=segments.reduce((s,x)=>s+hoursBetween(x.start,x.end),0);
+  return {
+    segments,
+    time:`${start}-${end}`,
+    workedHours:worked,
+    pause:hasPause?`${pauseStart}-${pauseEnd}`:"No",
+    pauseStart:hasPause?pauseStart:null,
+    pauseEnd:hasPause?pauseEnd:null
+  };
+}
+
+// Riempie i campi orari liberi da un turno esistente (o li svuota).
+function prefillEditorCustom(shift){
+  const hasPause=!!(shift && shift.pauseStart && shift.pauseEnd);
+  editStart.value = shift ? shift.segments[0].start : "";
+  editEnd.value = shift ? shift.segments[shift.segments.length-1].end : "";
+  editHasPause.checked = hasPause;
+  editPauseStart.value = hasPause ? shift.pauseStart : "";
+  editPauseEnd.value = hasPause ? shift.pauseEnd : "";
+  editPauseRow.style.display = hasPause ? "grid" : "none";
+}
+
+// Quando si sceglie un modello rapido, precompila i campi orari liberi.
+function fillCustomFromTemplate(){
+  const idx=editShiftSelect.value;
+  if(idx==="") return;
+  const store=stores.find(s=>s.id===editStoreId.value);
+  const employee=employees.find(e=>e.id===editEmployeeSelect.value);
+  if(!store||!employee) return;
+  const opt=shiftOptionsForEditor(store,employee)[Number(idx)];
+  if(opt) prefillEditorCustom(opt);
 }
 
 function saveManualShift(event){
@@ -2009,78 +2090,59 @@ function saveManualShift(event){
   const oldEmployeeId=editEmployeeId.value;
   const newEmployeeId=editEmployeeSelect.value;
   const day=editDaySelect.value;
-  const shiftIndex=editShiftSelect.value;
 
   const store=stores.find(s=>s.id===storeId);
   const employee=employees.find(e=>e.id===newEmployeeId);
   if(!store||!employee) return;
 
-  // rimuovi turno vecchio dalla posizione originale
+  // Turno costruito dagli orari liberi inseriti (dalle/alle + pausa).
+  let option;
+  try{
+    option=buildManualShift(
+      editStart.value, editEnd.value,
+      editHasPause.checked?editPauseStart.value:"",
+      editHasPause.checked?editPauseEnd.value:""
+    );
+  }catch(err){
+    showNotice(err.message,"warn"); // dialog aperto per correggere
+    return;
+  }
+
+  // Validazioni PRIMA di toccare i dati: se qualcosa non va, non si modifica
+  // nulla e il dialog resta aperto.
+  if(option){
+    let err=null;
+    if(!isShiftInsideStore(option,store)) err="gli orari sono fuori dall'apertura del negozio.";
+    else if(employee.rest===day) err="è il giorno di riposo del dipendente.";
+    else if(fullDayLeaveOnDay(employee,day)) err=`il dipendente è in ${leaveLabels[fullDayLeaveOnDay(employee,day).type]} quel giorno.`;
+    else if(!shiftClearsPartialLeave(employee,day,option)){ const p=partialLeaveOnDay(employee,day); err=`si sovrappone al permesso ${p.from}-${p.to}.`; }
+    else if(newEmployeeId!==oldEmployeeId && hasShiftElsewhere(storeId,newEmployeeId,day)) err="il dipendente è già in turno in un altro negozio quel giorno.";
+    else{
+      const currentAtSlot=schedule[storeId]?.[newEmployeeId]?.[day];
+      const base=employeeTotal(newEmployeeId)-(currentAtSlot?currentAtSlot.workedHours:0);
+      if(base+option.workedHours>weeklyTarget(employee)) err="supererebbe le ore settimanali del dipendente.";
+    }
+    if(err){ showNotice("Turno non salvato: "+err,"warn"); return; }
+  }
+
+  // Ok: applica la modifica. Rimuovi il turno dalla posizione originale…
   if(schedule[storeId]?.[oldEmployeeId]?.[editDay.value]){
     schedule[storeId][oldEmployeeId][editDay.value]=null;
   }
-
   if(!schedule[storeId][newEmployeeId]){
     schedule[storeId][newEmployeeId]=Object.fromEntries(days.map(d=>[d,null]));
   }
 
-  if(shiftIndex===""){
+  if(!option){
     schedule[storeId][newEmployeeId][day]=null;
-  }else{
-    const option=shiftOptionsForEditor(store,employee)[Number(shiftIndex)];
-    if(!option){
-      showNotice("Turno non valido.","warn");
-      editShiftDialog.close();
-      renderAll();
-      return;
-    }
-
-    if(employee.rest===day){
-      showNotice("Turno non salvato: giorno di riposo.","warn");
-      editShiftDialog.close();
-      renderAll();
-      return;
-    }
-
-    const full=fullDayLeaveOnDay(employee,day);
-    if(full){
-      showNotice(`Turno non salvato: ${leaveLabels[full.type]} quel giorno.`,"warn");
-      editShiftDialog.close();
-      renderAll();
-      return;
-    }
-    if(!shiftClearsPartialLeave(employee,day,option)){
-      const p=partialLeaveOnDay(employee,day);
-      showNotice(`Turno non salvato: si sovrappone al permesso ${p.from}-${p.to}.`,"warn");
-      editShiftDialog.close();
-      renderAll();
-      return;
-    }
-
-    if(hasShiftElsewhere(storeId,newEmployeeId,day)){
-      showNotice("Turno non salvato: il dipendente è già in turno in un altro negozio quel giorno.","warn");
-      editShiftDialog.close();
-      renderAll();
-      return;
-    }
-
-    const previous=schedule[storeId][newEmployeeId][day];
-    schedule[storeId][newEmployeeId][day]=null;
-    const wouldTotal=employeeTotal(newEmployeeId)+option.workedHours;
-
-    if(wouldTotal>employee.weeklyHours){
-      schedule[storeId][newEmployeeId][day]=previous;
-      showNotice("Turno non salvato: supererebbe le ore settimanali.","warn");
-      editShiftDialog.close();
-      renderAll();
-      return;
-    }
-
-    // Turno impostato a mano: viene bloccato. La generazione lo preserva
-    // e ricalcola gli altri dipendenti attorno a questa scelta.
-    schedule[storeId][newEmployeeId][day]={...option,locked:true};
+    saveData(); editShiftDialog.close(); renderAll();
+    showNotice("Turno rimosso.","warn");
+    return;
   }
 
+  // Turno impostato a mano: viene bloccato. La generazione lo preserva e
+  // ricalcola gli altri dipendenti attorno a questa scelta.
+  schedule[storeId][newEmployeeId][day]={...option,locked:true};
   saveData();
   editShiftDialog.close();
   renderAll();
@@ -2546,6 +2608,8 @@ importBackupInput.onchange=()=>{
 if(typeof editEmployeeSelect!=="undefined"){
   editEmployeeSelect.onchange=refreshEditShiftOptions;
   editDaySelect.onchange=refreshEditShiftOptions;
+  editShiftSelect.onchange=fillCustomFromTemplate;
+  editHasPause.onchange=()=>{ editPauseRow.style.display=editHasPause.checked?"grid":"none"; };
   editShiftForm.onsubmit=saveManualShift;
   btnDeleteShift.onclick=deleteManualShift;
   btnCancelEdit.onclick=()=>editShiftDialog.close();
