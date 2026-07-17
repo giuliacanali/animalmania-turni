@@ -100,6 +100,8 @@ function saveData(){
   }catch(err){
     showNotice("ATTENZIONE: le modifiche non sono state salvate sul dispositivo (navigazione privata, spazio esaurito o impostazioni del browser). Chiudendo o ricaricando la pagina andranno perse.","warn",8000);
   }
+  // Se il backend dati è attivo e sei admin, salva anche sul server (condiviso).
+  if(typeof scheduleServerPush==="function") scheduleServerPush();
 }
 
 function setWeek(key){
@@ -2399,6 +2401,7 @@ async function doLogin(pw){
 async function logout(){
   if(authBackend){ try{ await fetch("/api/auth",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"logout"})}); }catch(e){} }
   authRole=null;
+  lastDataAt=0; // forza il ricaricamento dei dati al prossimo login
   localStorage.removeItem("am134_role");
   applyAuthGate();
 }
@@ -2453,6 +2456,60 @@ function renderAccessi(){
   if(scope) scope.textContent = authBackend
     ? "Backend attivo: le modifiche valgono per tutti i dispositivi."
     : "Backend non collegato: le modifiche valgono solo su questo dispositivo.";
+}
+
+// --- Dati condivisi sul server: tutti vedono gli stessi turni ---
+// Admin: legge all'avvio e SALVA sul server ad ogni modifica.
+// Dipendenti: leggono e ricontrollano ogni 30s (sola lettura).
+// Se il backend non c'è, resta tutto in locale (nessun blocco).
+let dataBackend=false;
+let lastDataAt=0;
+let serverPushTimer=null;
+
+async function loadServerData(){
+  if(!authBackend || !currentRole()) return;
+  try{
+    const r=await fetch("/api/data",{headers:{Accept:"application/json"}});
+    if(!r.ok){ dataBackend=false; return; }
+    const d=await r.json();
+    if(!d.backend){ dataBackend=false; return; }
+    dataBackend=true;
+    if(d.data && Array.isArray(d.data.stores)){
+      if(d.data.updatedAt && d.data.updatedAt===lastDataAt) return; // già aggiornato
+      lastDataAt=d.data.updatedAt||0;
+      stores=d.data.stores;
+      employees=d.data.employees||[];
+      normalizeLegacyEmployees();
+      schedules=d.data.schedules||{};
+      if(!schedules[currentWeekKey]) schedules[currentWeekKey]=emptySchedule();
+      schedule=schedules[currentWeekKey];
+      ensureSchedule();
+      renderAll();
+    }else if(currentRole()==="admin"){
+      await pushServerData(); // server vuoto: lo inizializzo coi dati attuali
+    }
+  }catch(e){ dataBackend=false; }
+}
+
+function scheduleServerPush(){
+  if(!dataBackend || currentRole()!=="admin") return;
+  clearTimeout(serverPushTimer);
+  serverPushTimer=setTimeout(pushServerData, 1200);
+}
+
+async function pushServerData(){
+  if(!dataBackend || currentRole()!=="admin") return;
+  try{
+    const r=await fetch("/api/data",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({stores,employees,schedules})});
+    if(r.ok){ const d=await r.json(); if(d.updatedAt) lastDataAt=d.updatedAt; }
+  }catch(e){}
+}
+
+function startDataPolling(){
+  setInterval(()=>{
+    if(dataBackend && currentRole() && currentRole()!=="admin") loadServerData();
+  }, 30000);
 }
 
 
@@ -2630,6 +2687,7 @@ if(typeof loginForm!=="undefined"){
     pwInput.value="";
     applyAuthGate();
     renderAccessi();
+    await loadServerData();   // carica i turni condivisi dopo il login
     setView(r==="employee" ? "mioturno" : "dashboard");
     document.querySelector(".sidebar")?.classList.remove("open");
   };
@@ -2662,4 +2720,9 @@ if(typeof empProfile!=="undefined") applySelectedProfile();
 employeeCancelBtn.style.display='none';
 storeCancelBtn.style.display='none';
 renderAll();
-refreshSession().then(()=>{ applyAuthGate(); renderAccessi(); });
+refreshSession().then(async ()=>{
+  applyAuthGate();
+  renderAccessi();
+  await loadServerData();   // carica i dati condivisi dal server (se attivo)
+  startDataPolling();       // i dipendenti ricontrollano periodicamente
+});
