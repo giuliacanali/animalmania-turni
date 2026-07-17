@@ -2618,7 +2618,16 @@ btnGenerateSelected.onclick=()=>{
 };
 storeSelect.onchange=()=>{renderWeek();renderTurniIssues();};
 btnSave.onclick=()=>{saveData();showNotice("Salvato","ok");};
-btnClear.onclick=()=>{schedules[currentWeekKey]=emptySchedule();schedule=schedules[currentWeekKey];saveData();renderAll();showNotice("Turni svuotati","warn");};
+function clearWeekShifts(){
+  if(!confirm("Svuotare tutti i turni di questa settimana? L'azione vale per tutti i dispositivi e non è annullabile.")) return;
+  schedules[currentWeekKey]=emptySchedule();
+  schedule=schedules[currentWeekKey];
+  saveData();
+  renderAll();
+  showNotice("Turni della settimana svuotati.","warn");
+}
+btnClear.onclick=clearWeekShifts;
+if(typeof btnDashClear!=="undefined") btnDashClear.onclick=clearWeekShifts;
 btnPrevWeek.onclick=()=>setWeek(addWeeks(currentWeekKey,-1));
 btnNextWeek.onclick=()=>setWeek(addWeeks(currentWeekKey,1));
 btnToday.onclick=()=>setWeek(weekKeyOf(new Date()));

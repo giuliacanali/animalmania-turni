@@ -137,6 +137,11 @@ dialog::backdrop {
   color: var(--orange);
   border-color: var(--orange);
 }
+.weeknav #btnDashClear {
+  margin-left: auto;
+  color: var(--danger);
+  border-color: var(--danger);
+}
 .shift.locked { box-shadow: inset 0 0 0 2px var(--orange); }
 .lock { font-size: 11px; }
 
