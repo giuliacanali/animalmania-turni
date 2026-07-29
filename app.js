@@ -133,6 +133,14 @@ function emptySchedule(){
   return s;
 }
 
+// Una settimana è "vuota" se non contiene nessun turno assegnato.
+function isScheduleEmpty(sch){
+  if(!sch || typeof sch!=="object") return true;
+  return !Object.values(sch).some(byEmp=>
+    byEmp && Object.values(byEmp).some(byDay=>
+      byDay && Object.values(byDay).some(v=>v)));
+}
+
 function ensureSchedule(){
   stores.forEach(st=>{
     schedule[st.id]=schedule[st.id]||{};
@@ -510,8 +518,36 @@ function requiredBands(store){
   return requiredCoverageSlots(store);
 }
 
+// Copertura di una fascia = minimo numero di persone presenti CONTEMPORANEAMENTE
+// in ogni istante della fascia. Così una fascia coperta "a staffetta" (più
+// persone che si alternano) risulta coperta se in ogni momento ci sono almeno
+// `min` presenti — anche se nessuno da solo copre l'intera fascia. Le pause
+// abbassano correttamente il conteggio nel loro intervallo.
 function coverage(storeId,day,band){
-  return employees.filter(e=>canWorkIn(e,storeId)).filter(e=>shiftCovers(schedule[storeId]?.[e.id]?.[day],band)).length;
+  const bs=toMin(band.start), be=toMin(band.end);
+  const workers=employees.filter(e=>canWorkIn(e,storeId));
+  const segs=[];
+  const points=new Set([bs,be]);
+  workers.forEach(e=>{
+    const sh=schedule[storeId]?.[e.id]?.[day];
+    (sh&&sh.segments||[]).forEach(seg=>{
+      const s=toMin(seg.start), en=toMin(seg.end);
+      if(en>bs && s<be){
+        segs.push({s,en});
+        points.add(Math.max(s,bs));
+        points.add(Math.min(en,be));
+      }
+    });
+  });
+  const pts=[...points].filter(p=>p>=bs && p<=be).sort((a,b)=>a-b);
+  if(pts.length<2) return 0;
+  let min=Infinity;
+  for(let i=0;i<pts.length-1;i++){
+    const mid=(pts[i]+pts[i+1])/2;
+    const c=segs.filter(x=>x.s<=mid && x.en>=mid).length;
+    if(c<min) min=c;
+  }
+  return min===Infinity?0:min;
 }
 
 function shiftOptionsForStore(store,e){
@@ -2465,6 +2501,7 @@ function renderAccessi(){
 let dataBackend=false;
 let lastDataAt=0;
 let serverPushTimer=null;
+let firstServerLoad=true;
 
 async function loadServerData(){
   if(!authBackend || !currentRole()) return;
@@ -2481,6 +2518,17 @@ async function loadServerData(){
       employees=d.data.employees||[];
       normalizeLegacyEmployees();
       schedules=d.data.schedules||{};
+      // Allinea la settimana attiva a quella su cui lavora l'admin, così tutti
+      // vedono gli stessi turni senza doverla cercare. Solo al primo caricamento
+      // della sessione, o se la settimana locale è vuota: chi ha navigato di
+      // proposito su un'altra settimana non viene spostato.
+      const serverWeek=d.data.week;
+      if(serverWeek && schedules[serverWeek] &&
+         (firstServerLoad || isScheduleEmpty(schedules[currentWeekKey]))){
+        currentWeekKey=serverWeek;
+        try{ localStorage.setItem("am134_week",currentWeekKey); }catch(e){}
+      }
+      firstServerLoad=false;
       if(!schedules[currentWeekKey]) schedules[currentWeekKey]=emptySchedule();
       schedule=schedules[currentWeekKey];
       ensureSchedule();
@@ -2501,7 +2549,7 @@ async function pushServerData(){
   if(!dataBackend || currentRole()!=="admin") return;
   try{
     const r=await fetch("/api/data",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({stores,employees,schedules})});
+      body:JSON.stringify({stores,employees,schedules,week:currentWeekKey})});
     if(r.ok){ const d=await r.json(); if(d.updatedAt) lastDataAt=d.updatedAt; }
   }catch(e){}
 }
