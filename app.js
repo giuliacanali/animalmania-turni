@@ -2554,6 +2554,18 @@ async function pushServerData(){
   }catch(e){}
 }
 
+// Se c'è un invio al server ancora in attesa (ritardato di ~1,2s), forzalo
+// subito. Usato alla chiusura/cambio scheda così nulla resta non condiviso.
+function flushServerData(){
+  if(serverPushTimer){
+    clearTimeout(serverPushTimer);
+    serverPushTimer=null;
+    pushServerData();
+  }
+}
+document.addEventListener("visibilitychange",()=>{ if(document.hidden) flushServerData(); });
+window.addEventListener("pagehide", flushServerData);
+
 function startDataPolling(){
   setInterval(()=>{
     if(dataBackend && currentRole() && currentRole()!=="admin") loadServerData();
@@ -2665,7 +2677,6 @@ btnGenerateSelected.onclick=()=>{
   renderWeek();
 };
 storeSelect.onchange=()=>{renderWeek();renderTurniIssues();};
-btnSave.onclick=()=>{saveData();showNotice("Salvato","ok");};
 function clearWeekShifts(){
   if(!confirm("Svuotare tutti i turni di questa settimana? L'azione vale per tutti i dispositivi e non è annullabile.")) return;
   schedules[currentWeekKey]=emptySchedule();
