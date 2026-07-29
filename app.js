@@ -717,6 +717,12 @@ function generateAllSchedules(){
     .forEach(e=>reduceEmployeeHoursGlobal(e));
 
   stores.forEach(st=>repairAllCoverageForStore(st.id));
+  // Seconda passata dopo la riparazione (come nella generazione per-negozio):
+  // ripristina le ore e la distribuzione flessibile se il repair le ha alterate.
+  completeMandatoryHoursGlobal();
+  employees
+    .filter(e=>!e.fixedShifts && !e.manual && employeeTotal(e.id)>weeklyTarget(e))
+    .forEach(e=>reduceEmployeeHoursGlobal(e));
   stores.forEach(st=>minimizeResidualGapsForStore(st.id));
   stores.forEach(st=>optimizePausePositionsForStore(st.id));
 
@@ -1716,6 +1722,14 @@ function completeMandatoryHoursGlobal(){
   const workers=employees.filter(e=>!e.fixedShifts && !e.manual).slice().sort((a,b)=>(a.isExtra?1:0)-(b.isExtra?1:0) || (Math.random()-0.5));
 
   workers.forEach(e=>{
+    // Profili flessibili: distribuzione dedicata sui giorni di apertura del
+    // negozio principale (come nella generazione del singolo negozio).
+    const prof=getProfile(e.profileId);
+    if(prof.spreadDays && e.primaryStoreId){
+      const store=stores.find(s=>s.id===e.primaryStoreId);
+      if(store){ applyFlexibleDistribution(e.primaryStoreId,store,e); return; }
+    }
+
     let guard=0;
     while(employeeTotal(e.id)<weeklyTarget(e) && guard<250){
       guard++;
