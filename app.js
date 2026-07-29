@@ -1130,7 +1130,6 @@ function editEmployee(id){
   empPrimaryStore.value=e.primaryStoreId;
   empProfile.value=e.profileId || "standard_40";
   applySelectedProfile();
-  empHours.value=e.weeklyHours;
   empRest.value=e.rest||"";
   empType.value=e.type;
   empPause.value=e.pauseHours||0;
@@ -1485,6 +1484,16 @@ function completeMandatoryHoursForStore(storeId){
       schedule[storeId][e.id][assignment.day]=assignment.shift;
     }
 
+    // Restano ore non assegnabili come nuovo turno (es. mancano 2h e il blocco
+    // minimo è 6h)? Allunga i turni esistenti (6h -> 8h) finché possibile.
+    guard=0;
+    while(employeeTotal(e.id)<weeklyTarget(e) && guard<250){
+      guard++;
+      const upgrade=findBestShiftUpgrade(storeId,store,e);
+      if(!upgrade) break;
+      schedule[storeId][e.id][upgrade.day]=upgrade.shift;
+    }
+
     guard=0;
     while(employeeTotal(e.id)>weeklyTarget(e) && guard<120){
       guard++;
@@ -1516,6 +1525,35 @@ function findBestHourCompletion(storeId,store,e){
     return bExact-aExact || b.score-a.score || b.shift.workedHours-a.shift.workedHours || (Math.random()-0.5);
   });
 
+  return candidates[0];
+}
+
+// Quando restano poche ore da assegnare e non ci sono giorni liberi utili
+// (o il blocco minimo è troppo grande), prova ad ALLUNGARE un turno già
+// esistente: es. da 6h a 8h. Serve ai profili flessibili (6h/8h) per arrivare
+// sempre al monte ore contrattuale. L'allungamento è ammesso solo se mantiene
+// tutta la copertura richiesta e non sfora il target.
+function findBestShiftUpgrade(storeId,store,e){
+  const missing=weeklyTarget(e)-employeeTotal(e.id);
+  if(missing<=0) return null;
+  const candidates=[];
+
+  genDays.forEach(day=>{
+    const cur=schedule[storeId]?.[e.id]?.[day];
+    if(!cur || cur.locked) return;
+
+    shiftOptionsForStore(store,e).forEach(opt=>{
+      const gain=opt.workedHours-cur.workedHours;
+      if(gain<=0 || gain>missing) return;
+      if(!shiftClearsPartialLeave(e,day,opt)) return;
+      if(!replacementPreservesAllCoverage(storeId,store,e.id,day,opt)) return;
+      candidates.push({day,shift:opt,gain,
+        score:genericScore(storeId,day,{start:opt.segments[0].start,end:opt.segments[opt.segments.length-1].end,min:1,base:true},e,opt,false)});
+    });
+  });
+
+  if(!candidates.length) return null;
+  candidates.sort((a,b)=> b.gain-a.gain || b.score-a.score || (Math.random()-0.5));
   return candidates[0];
 }
 
@@ -1954,7 +1992,7 @@ function addEmployee(e){
   const employeeData={
     id,
     name:empName.value.trim(),
-    weeklyHours:profile.id==="turno_fisso"?Object.values(fixedShifts).reduce((s,f)=>s+fixedShiftToShift(f).workedHours,0):Number(empHours.value),
+    weeklyHours:profile.id==="turno_fisso"?Object.values(fixedShifts).reduce((s,f)=>s+fixedShiftToShift(f).workedHours,0):profile.weeklyHours,
     primaryStoreId:empPrimaryStore.value,
     secondaryStoreIds:secondary,
     rest:profile.id==="extra_30"?"":(profile.id==="turno_fisso"?(document.getElementById("fixedRest")?.value||""):empRest.value),
@@ -2593,12 +2631,10 @@ function applySelectedProfile(){
 
   const p=getProfile(profileSelect.value);
 
-  document.getElementById("empHours").value=p.weeklyHours;
   document.getElementById("empType").value=p.type;
   document.getElementById("empPause").value=p.pauseHours || 0;
   document.getElementById("empRest").value=p.restDefault || "";
 
-  document.getElementById("empHours").readOnly=true;
   document.getElementById("empType").disabled=true;
 
   const summary=document.getElementById("profileSummary");
