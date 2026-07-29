@@ -40,7 +40,7 @@ function formatWeekRange(key){
 
 const employeeProfiles = [
   {id:"standard_40",name:"Standard 40h",weeklyHours:40,type:"8",restDefault:"Mer",pauseHours:1,isExtra:false,fixedShifts:false,description:"40h, 5 giorni da 8h, riposo obbligatorio Lun-Ven"},
-  {id:"flessibile_40",name:"Flessibile 40h",weeklyHours:40,type:"6-8",restDefault:"",pauseHours:1,isExtra:false,fixedShifts:false,description:"40h, 6 giorni, turni 6h o 8h"},
+  {id:"flessibile_40",name:"Flessibile 40h",weeklyHours:40,type:"6-8",restDefault:"",pauseHours:1,isExtra:false,fixedShifts:false,spreadDays:true,description:"40h, 6 giorni, turni 6h o 8h"},
   {id:"solo_6",name:"Solo 6h",weeklyHours:36,type:"6",restDefault:"",pauseHours:0,isExtra:false,fixedShifts:false,description:"36h, turni solo da 6h, nessuna pausa"},
   {id:"extra_30",name:"Extra 30h",weeklyHours:30,type:"4-5",restDefault:"",pauseHours:0,isExtra:true,fixedShifts:false,description:"Extra: usato solo per coprire buchi, massimo 30h, turni 4h o 5h, senza pausa"},
   {id:"turno_fisso",name:"Turno fisso",weeklyHours:0,type:"fixed",restDefault:"",pauseHours:0,isExtra:false,fixedShifts:true,description:"Orari impostati manualmente giorno per giorno"}
@@ -1470,12 +1470,70 @@ function replacementPreservesCriticalCoverage(storeId,store,employeeId,day,newSh
   return ok;
 }
 
+// Punteggio di copertura di un turno in un giorno (riuso della logica generica).
+function flexScore(storeId,store,e,day,shift){
+  return genericScore(storeId,day,{start:shift.segments[0].start,end:shift.segments[shift.segments.length-1].end,min:1,base:true},e,shift,false);
+}
+
+// Miglior turno di una data durata (6h/8h) per quel giorno, valutato SENZA il
+// turno attuale del dipendente (così si misura il contributo reale alla copertura).
+function flexBestOption(storeId,store,e,day,hours){
+  const old=schedule[storeId]?.[e.id]?.[day];
+  if(schedule[storeId]?.[e.id]) schedule[storeId][e.id][day]=null;
+  let best=null,bestScore=-1e9;
+  shiftOptionsForStore(store,e)
+    .filter(o=>o.workedHours===hours && shiftClearsPartialLeave(e,day,o))
+    .forEach(o=>{ const sc=flexScore(storeId,store,e,day,o); if(sc>bestScore){ bestScore=sc; best=o; } });
+  if(schedule[storeId]?.[e.id]) schedule[storeId][e.id][day]=old;
+  return best;
+}
+
+// Profili "flessibili" (es. Flessibile 40h): devono lavorare su TUTTI i giorni
+// di apertura del negozio, con turni da 6h o 8h, centrando il monte ore. Con 6
+// giorni e 40h l'unica combinazione è 2 turni da 8h + 4 da 6h. Qui imponiamo
+// quella distribuzione, mettendo le giornate da 8h dove servono di più alla
+// copertura. I turni bloccati a mano restano intoccati.
+function applyFlexibleDistribution(storeId,store,e){
+  const avail=genDays.filter(d=> store.openDays.includes(d) && canWorkDay(e,d) && !hasShiftElsewhere(storeId,e.id,d));
+  const freeDays=avail.filter(d=> !schedule[storeId]?.[e.id]?.[d]?.locked);
+  if(!freeDays.length) return;
+
+  const lockedHours=avail
+    .filter(d=> schedule[storeId]?.[e.id]?.[d]?.locked)
+    .reduce((s,d)=> s + (schedule[storeId][e.id][d].workedHours||0), 0);
+
+  const D=freeDays.length;
+  const remaining=weeklyTarget(e)-lockedHours;
+  // a*8 + (D-a)*6 = remaining  ->  a = (remaining - 6D) / 2
+  let eights=Math.round((remaining-6*D)/2);
+  eights=Math.max(0, Math.min(D, eights));
+
+  const perDay=freeDays.map(day=>{
+    const best6=flexBestOption(storeId,store,e,day,6);
+    const best8=flexBestOption(storeId,store,e,day,8);
+    const s6=best6?flexScore(storeId,store,e,day,best6):-1e9;
+    const s8=best8?flexScore(storeId,store,e,day,best8):-1e9;
+    return {day,best6,best8,gain:s8-s6};
+  });
+
+  // Le giornate da 8h vanno dove l'ora in più rende di più (e dove un 8h è valido).
+  const eightDays=new Set(perDay.filter(x=>x.best8).sort((a,b)=>b.gain-a.gain).slice(0,eights).map(x=>x.day));
+
+  perDay.forEach(x=>{
+    const shift=eightDays.has(x.day) ? (x.best8||x.best6) : (x.best6||x.best8);
+    if(shift) schedule[storeId][e.id][x.day]=shift;
+  });
+}
+
 function completeMandatoryHoursForStore(storeId){
   const store=stores.find(s=>s.id===storeId);
   const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts && !e.manual);
   const ordered=workers.slice().sort((a,b)=>workerPriority(a,storeId)-workerPriority(b,storeId) || (Math.random()-0.5));
 
   ordered.forEach(e=>{
+    // Profili flessibili: distribuzione dedicata su tutti i giorni di apertura.
+    if(getProfile(e.profileId).spreadDays){ applyFlexibleDistribution(storeId,store,e); return; }
+
     let guard=0;
     while(employeeTotal(e.id)<weeklyTarget(e) && guard<250){
       guard++;
