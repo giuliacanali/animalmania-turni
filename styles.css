@@ -364,3 +364,6 @@ body.locked { overflow: hidden; }
 .access-current strong { font-family: ui-monospace, Menlo, monospace; background: var(--soft); color: var(--orange); padding: 3px 8px; border-radius: 8px; }
 .access-note p { color: var(--muted); margin: 0; }
 .access-note code { background: #f0ede9; padding: 1px 5px; border-radius: 5px; }
+
+/* V37 straordinari: ore oltre il target in rosso */
+.over-hours{color:var(--danger);font-weight:900;}

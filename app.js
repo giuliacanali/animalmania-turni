@@ -998,7 +998,7 @@ function renderEmployeeView(){
     const absChips=Object.entries(absCount).map(([t,n])=>`<span class="tag leave-tag leave-${t}">${leaveLabels[t]}: ${n} ${n===1?'giorno':'giorni'}</span>`).join("");
     const chips=(storeChips+absChips) || `<span class="muted">Nessun turno questa settimana</span>`;
     summary.innerHTML=`<div class="emp-summary-head"><strong>${e.name}</strong>`+
-      `<span class="hours ${total>=target?'ok':''}">${total}/${target}h</span></div>`+
+      `<span class="hours ${total>target?'over':total===target?'ok':''}">${total}/${target}h</span></div>`+
       `<div class="emp-summary-stores">${chips}</div>`;
   }
 
@@ -1244,7 +1244,8 @@ function renderDashboard(){
     const p=tgt>0?Math.min(100,Math.round(h/tgt*100)):0;
     const leave=leaveSummaryThisWeek(e);
     const leaveTag=leave?`<small class="leave-note">${leave}</small>`:"";
-    return `<div class="progressrow"><header><span>${e.name}${leaveTag}</span><span>${h}/${tgt}h</span></header><div class="progress"><span style="width:${p}%"></span></div></div>`;
+    const over=h>tgt;
+    return `<div class="progressrow"><header><span>${e.name}${leaveTag}</span><span class="${over?'over-hours':''}">${h}/${tgt}h</span></header><div class="progress"><span style="width:${p}%${over?';background:var(--danger)':''}"></span></div></div>`;
   }).join("")||"Nessun dipendente";
 
   renderDashboardCalendar();
@@ -2287,11 +2288,8 @@ function saveManualShift(event){
     else if(fullDayLeaveOnDay(employee,day)) err=`il dipendente è in ${leaveLabels[fullDayLeaveOnDay(employee,day).type]} quel giorno.`;
     else if(!shiftClearsPartialLeave(employee,day,option)){ const p=partialLeaveOnDay(employee,day); err=`si sovrappone al permesso ${p.from}-${p.to}.`; }
     else if(newEmployeeId!==oldEmployeeId && hasShiftElsewhere(storeId,newEmployeeId,day)) err="il dipendente è già in turno in un altro negozio quel giorno.";
-    else{
-      const currentAtSlot=schedule[storeId]?.[newEmployeeId]?.[day];
-      const base=employeeTotal(newEmployeeId)-(currentAtSlot?currentAtSlot.workedHours:0);
-      if(base+option.workedHours>weeklyTarget(employee)) err="supererebbe le ore settimanali del dipendente.";
-    }
+    // NB: lo straordinario è consentito in manuale: NON blocco se supera le
+    // ore settimanali (l'automatico invece continua a rispettarle).
     if(err){ showNotice("Turno non salvato: "+err,"warn"); return; }
   }
 
@@ -2316,7 +2314,12 @@ function saveManualShift(event){
   saveData();
   editShiftDialog.close();
   renderAll();
-  showNotice("Turno bloccato. La generazione lavorerà attorno a questo turno.","ok");
+  const tot=employeeTotal(newEmployeeId), tgt=weeklyTarget(employee);
+  if(tot>tgt){
+    showNotice(`Turno bloccato — STRAORDINARIO: ${tot}/${tgt}h (oltre le ore settimanali).`,"warn");
+  }else{
+    showNotice("Turno bloccato. La generazione lavorerà attorno a questo turno.","ok");
+  }
 }
 
 function deleteManualShift(){
