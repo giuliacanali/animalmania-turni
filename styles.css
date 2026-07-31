@@ -367,3 +367,7 @@ body.locked { overflow: hidden; }
 
 /* V37 straordinari: ore oltre il target in rosso */
 .over-hours{color:var(--danger);font-weight:900;}
+
+/* V38 mostra il negozio dove lavora quel giorno (griglia turni) */
+.elsewhere{display:inline-block;color:var(--muted);font-weight:800;font-size:12px;line-height:1.2;}
+.elsewhere small{display:block;font-weight:600;font-size:11px;color:#aaa;margin-top:1px;}

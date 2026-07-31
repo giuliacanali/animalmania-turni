@@ -325,6 +325,13 @@ function awayShiftCount(eid){
   });
   return n;
 }
+// Un dipendente è "bloccato" se ha almeno un turno bloccato a mano nella
+// settimana attiva: in tal caso la generazione automatica NON lo tocca affatto
+// (non azzera, non riempie, non riduce, non riassegna). Rigenera solo gli altri
+// lavorando attorno a lui. Così i turni manuali e gli straordinari restano.
+function hasLockThisWeek(eid){
+  return stores.some(st=>days.some(d=>{ const sh=schedule[st.id]?.[eid]?.[d]; return sh && sh.locked; }));
+}
 function canWorkDay(e, day){
   if(day==="Dom") return false;
   if(e.rest && e.rest===day) return false;
@@ -383,13 +390,10 @@ function clearGeneratedScheduleForStore(storeId){
   // preservati anche per i dipendenti normali.
   getStoreWorkers(storeId).filter(e=>!e.manual).forEach(e=>{
     schedule[storeId]=schedule[storeId]||{};
-    const cur=schedule[storeId][e.id]||{};
-    // Preserva i turni bloccati, tranne quelli in conflitto con un'assenza:
-    // in quel caso l'assenza vince e il turno viene rimosso.
-    schedule[storeId][e.id]=Object.fromEntries(days.map(d=>{
-      const keep = cur[d] && cur[d].locked && !shiftConflictsWithLeave(e,d,cur[d]);
-      return [d, keep ? cur[d] : null];
-    }));
+    // Dipendente con un blocco: non lo tocco, resta tutta la sua settimana.
+    if(hasLockThisWeek(e.id)) return;
+    // Altri: azzera i turni generati (non hanno blocchi da preservare).
+    schedule[storeId][e.id]=Object.fromEntries(days.map(d=>[d,null]));
   });
 }
 function buildShiftFromSegments(segments,e){
@@ -713,7 +717,7 @@ function generateAllSchedules(){
   completeMandatoryHoursGlobal();
 
   employees
-    .filter(e=>!e.fixedShifts && !e.manual && employeeTotal(e.id)>weeklyTarget(e))
+    .filter(e=>!e.fixedShifts && !e.manual && !hasLockThisWeek(e.id) && employeeTotal(e.id)>weeklyTarget(e))
     .forEach(e=>reduceEmployeeHoursGlobal(e));
 
   stores.forEach(st=>repairAllCoverageForStore(st.id));
@@ -721,7 +725,7 @@ function generateAllSchedules(){
   // ripristina le ore e la distribuzione flessibile se il repair le ha alterate.
   completeMandatoryHoursGlobal();
   employees
-    .filter(e=>!e.fixedShifts && !e.manual && employeeTotal(e.id)>weeklyTarget(e))
+    .filter(e=>!e.fixedShifts && !e.manual && !hasLockThisWeek(e.id) && employeeTotal(e.id)>weeklyTarget(e))
     .forEach(e=>reduceEmployeeHoursGlobal(e));
   stores.forEach(st=>minimizeResidualGapsForStore(st.id));
   stores.forEach(st=>optimizePausePositionsForStore(st.id));
@@ -927,9 +931,25 @@ function cell(storeId,e,d){
   }else if(lv){
     content=leaveBadge(lv);
   }else{
-    content=`<span class="muted">${e.rest===d?'Riposo':'—'}</span>`;
+    // Se quel giorno lavora in un ALTRO negozio, mostra dove (invece del "—").
+    const elsewhere=otherStoreShiftOn(e.id,d,storeId);
+    if(elsewhere){
+      content=`<span class="elsewhere">${elsewhere.store.name}<small>${elsewhere.shift.time}</small></span>`;
+    }else{
+      content=`<span class="muted">${e.rest===d?'Riposo':'—'}</span>`;
+    }
   }
   return `<td class="editable-cell" data-store="${storeId}" data-employee="${e.id}" data-day="${d}">${content}</td>`;
+}
+
+// Turno del dipendente in un negozio diverso da quello indicato, quel giorno.
+function otherStoreShiftOn(eid,day,exceptStoreId){
+  for(const st of stores){
+    if(st.id===exceptStoreId) continue;
+    const sh=schedule[st.id]?.[eid]?.[day];
+    if(sh) return {store:st, shift:sh};
+  }
+  return null;
 }
 
 function leaveBadge(lv){
@@ -1337,6 +1357,7 @@ function findGenericAssignmentForBand(storeId,day,band,preferSpecial){
 
   getStoreWorkers(storeId)
     .filter(e=>!e.fixedShifts && !e.manual)
+    .filter(e=>!hasLockThisWeek(e.id)) // i dipendenti bloccati non si toccano
     .filter(e=>canWorkDay(e,day))
     .forEach(e=>{
       const existing=schedule[storeId]?.[e.id]?.[day];
@@ -1556,7 +1577,7 @@ function applyFlexibleDistribution(storeId,store,e){
 
 function completeMandatoryHoursForStore(storeId){
   const store=stores.find(s=>s.id===storeId);
-  const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts && !e.manual);
+  const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts && !e.manual && !hasLockThisWeek(e.id));
   const ordered=workers.slice().sort((a,b)=>workerPriority(a,storeId)-workerPriority(b,storeId) || (Math.random()-0.5));
 
   ordered.forEach(e=>{
@@ -1742,7 +1763,7 @@ function completeMandatoryHoursGlobal(){
   // Prima i dipendenti normali, poi gli Extra: così un Extra non "ruba"
   // uno slot di cui un dipendente normale ha davvero bisogno per arrivare
   // alle sue ore contrattuali.
-  const workers=employees.filter(e=>!e.fixedShifts && !e.manual).slice().sort((a,b)=>(a.isExtra?1:0)-(b.isExtra?1:0) || (Math.random()-0.5));
+  const workers=employees.filter(e=>!e.fixedShifts && !e.manual && !hasLockThisWeek(e.id)).slice().sort((a,b)=>(a.isExtra?1:0)-(b.isExtra?1:0) || (Math.random()-0.5));
 
   workers.forEach(e=>{
     // Profili flessibili: distribuzione dedicata sui giorni di apertura del
@@ -1839,7 +1860,7 @@ function minimizeResidualGapsForStore(storeId){
       const before=totalUncoveredMinutesForDay(storeId,day);
       if(before===0) break;
 
-      const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts && !e.manual && schedule[storeId]?.[e.id]?.[day] && !schedule[storeId][e.id][day].locked);
+      const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts && !e.manual && !hasLockThisWeek(e.id) && schedule[storeId]?.[e.id]?.[day] && !schedule[storeId][e.id][day].locked);
 
       for(const e of workers){
         const current=schedule[storeId][e.id][day];
@@ -1885,7 +1906,7 @@ function optimizePausePositionsForStore(storeId){
       const before=totalUncoveredMinutesForDay(storeId,day);
       if(before===0) break;
 
-      const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts && !e.manual);
+      const workers=getStoreWorkers(storeId).filter(e=>!e.fixedShifts && !e.manual && !hasLockThisWeek(e.id));
       for(const e of workers){
         const cur=schedule[storeId]?.[e.id]?.[day];
         if(!cur || cur.locked || cur.workedHours!==8 || !cur.pauseStart || !cur.pauseEnd) continue;
