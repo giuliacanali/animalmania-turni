@@ -1212,6 +1212,26 @@ function renderStores(){
   }).join("");
 }
 
+// Riassunto assenze del dipendente nella settimana attiva (per la dashboard).
+// Es. "Ferie", "Permesso (Mer)", "Malattia (Lun, Mar)". Vuoto se non ci sono.
+function leaveSummaryThisWeek(e){
+  const byType={};
+  days.forEach(day=>{
+    const iso=dateForDay(day); if(!iso) return;
+    const lv=fullDayLeaveOn(e,iso)||partialLeaveOn(e,iso);
+    if(lv) (byType[lv.type]=byType[lv.type]||[]).push(day);
+  });
+  const order=["ferie","malattia","permesso"];
+  return Object.keys(byType)
+    .sort((a,b)=>order.indexOf(a)-order.indexOf(b))
+    .map(t=>{
+      const ds=byType[t].filter(d=>d!=="Dom");
+      const allWeek=ds.length>=genDays.length;
+      return leaveLabels[t]+(allWeek||!ds.length?"":` (${ds.join(", ")})`);
+    })
+    .join(" · ");
+}
+
 function renderDashboard(){
   dashboardCards.innerHTML=stores.map(s=>{
     const workers=employees.filter(e=>canWorkIn(e,s.id));
@@ -1222,7 +1242,9 @@ function renderDashboard(){
     const h=employeeTotal(e.id);
     const tgt=weeklyTarget(e);
     const p=tgt>0?Math.min(100,Math.round(h/tgt*100)):0;
-    return `<div class="progressrow"><header><span>${e.name}</span><span>${h}/${tgt}h</span></header><div class="progress"><span style="width:${p}%"></span></div></div>`;
+    const leave=leaveSummaryThisWeek(e);
+    const leaveTag=leave?`<small class="leave-note">${leave}</small>`:"";
+    return `<div class="progressrow"><header><span>${e.name}${leaveTag}</span><span>${h}/${tgt}h</span></header><div class="progress"><span style="width:${p}%"></span></div></div>`;
   }).join("")||"Nessun dipendente";
 
   renderDashboardCalendar();

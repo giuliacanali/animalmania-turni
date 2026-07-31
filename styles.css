@@ -22,6 +22,7 @@ th, td { padding: 9px; font-size: 12px; }
 .days { grid-template-columns: repeat(7, minmax(145px,1fr)); gap: 10px; }
 .cards, .grid2 { gap: 12px; }
 .progressrow { margin-bottom: 10px; }
+.leave-note { display:inline-block; background:#fff8e8; color:var(--warn); border-radius:999px; padding:2px 8px; font-size:11px; font-weight:800; margin-left:6px; }
 
 
 /* V9.0 modifica manuale */
