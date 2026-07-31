@@ -920,12 +920,18 @@ function renderWeek(){
   });
 }
 
+// Marker di riposo impostato a mano: nessun turno, ma "Riposo" bloccato.
+function restMarker(){ return {rest:true, locked:true, time:"Riposo", segments:[], workedHours:0, pause:"No", pauseStart:null, pauseEnd:null}; }
+function isRestMarker(sh){ return !!(sh && sh.rest); }
+
 function cell(storeId,e,d){
   const sh=schedule[storeId]?.[e.id]?.[d];
   const lock = sh&&sh.locked ? ` <span class="lock" title="Turno bloccato: la generazione non lo modifica">🔒</span>` : "";
   const lv=leaveOnDay(e,d);
   let content;
-  if(sh){
+  if(isRestMarker(sh)){
+    content=`<span class="muted">Riposo${lock}</span>`;
+  }else if(sh){
     content=`<span class="shift${sh.locked?" locked":""}">${sh.time}${lock}</span>${sh.pause && sh.pause!=="No"?`<span class="note">Pausa ${sh.pause}</span>`:""}`;
     if(lv && lv.type==="permesso") content+=`<span class="note">Permesso ${lv.from}-${lv.to}</span>`;
   }else if(lv){
@@ -947,7 +953,7 @@ function otherStoreShiftOn(eid,day,exceptStoreId){
   for(const st of stores){
     if(st.id===exceptStoreId) continue;
     const sh=schedule[st.id]?.[eid]?.[day];
-    if(sh) return {store:st, shift:sh};
+    if(sh && !isRestMarker(sh)) return {store:st, shift:sh};
   }
   return null;
 }
@@ -964,7 +970,7 @@ function renderDays(){
 
   storeDays.innerHTML=days.map((d,i)=>{
     const rows=workers.map(e=>[e,schedule[storeId]?.[e.id]?.[d]])
-      .filter(x=>x[1])
+      .filter(x=>x[1] && !isRestMarker(x[1]))
       .sort((a,b)=>a[1].time.localeCompare(b[1].time))
       .map(([e,s])=>`<div class="person editable-person" data-store="${storeId}" data-employee="${e.id}" data-day="${d}"><strong>${e.name}</strong><span>${s.time}${s.locked?" 🔒":""}</span></div>`)
       .join("");
@@ -1025,9 +1031,10 @@ function renderEmployeeView(){
   daysBox.innerHTML=days.map((d,i)=>{
     const items=stores
       .map(st=>[st,schedule[st.id]?.[e.id]?.[d]])
-      .filter(x=>x[1])
+      .filter(x=>x[1] && !isRestMarker(x[1]))
       .sort((a,b)=>a[1].time.localeCompare(b[1].time));
     const lv=leaveOnDay(e,d);
+    const manualRest=stores.some(st=>isRestMarker(schedule[st.id]?.[e.id]?.[d]));
 
     let inner;
     if(items.length){
@@ -1036,7 +1043,7 @@ function renderEmployeeView(){
     }else if(lv){
       inner=leaveBadge(lv);
     }else{
-      inner=`<span class="muted">${e.rest===d?'Riposo':'—'}</span>`;
+      inner=`<span class="muted">${(manualRest||e.rest===d)?'Riposo':'—'}</span>`;
     }
 
     return `<div class="day"><h3>${d} ${dates[i].getDate()}</h3>${inner}</div>`;
@@ -1282,7 +1289,7 @@ function storeDayInfo(storeId,day){
     ...store.sessions.flatMap(splitSessionIntoSlots)
   ];
   const gap=bands.some(b=>coverage(storeId,day,b)<b.min);
-  const count=employees.filter(e=>schedule[storeId]?.[e.id]?.[day]).length;
+  const count=employees.filter(e=>{ const sh=schedule[storeId]?.[e.id]?.[day]; return sh && !isRestMarker(sh); }).length;
   return {state:gap?"gap":"ok", count};
 }
 
@@ -2211,9 +2218,18 @@ function openShiftEditor(storeId, employeeId, day){
 
   const current=schedule[storeId]?.[employeeId]?.[day];
   editShiftSelect.value="";
-  prefillEditorCustom(current||null);
+  const resting=isRestMarker(current);
+  editRest.checked=resting;
+  prefillEditorCustom(resting ? null : (current||null));
+  toggleEditRest();
 
   editShiftDialog.showModal();
+}
+
+// Mostra/nasconde i campi del turno quando è selezionato "Riposo".
+function toggleEditRest(){
+  const box=document.getElementById("editShiftFields");
+  if(box) box.style.display = editRest.checked ? "none" : "";
 }
 
 function refreshEditShiftOptions(){
@@ -2286,6 +2302,19 @@ function saveManualShift(event){
   const store=stores.find(s=>s.id===storeId);
   const employee=employees.find(e=>e.id===newEmployeeId);
   if(!store||!employee) return;
+
+  // Riposo impostato a mano: nessun turno, giorno libero bloccato. Il
+  // dipendente diventa "bloccato" e l'automatico non lo tocca più.
+  if(editRest.checked){
+    if(schedule[storeId]?.[oldEmployeeId]?.[editDay.value]) schedule[storeId][oldEmployeeId][editDay.value]=null;
+    if(!schedule[storeId][newEmployeeId]) schedule[storeId][newEmployeeId]=Object.fromEntries(days.map(d=>[d,null]));
+    schedule[storeId][newEmployeeId][day]=restMarker();
+    saveData();
+    editShiftDialog.close();
+    renderAll();
+    showNotice("Riposo impostato. La generazione non modificherà questo dipendente.","ok");
+    return;
+  }
 
   // Turno costruito dagli orari liberi inseriti (dalle/alle + pausa).
   let option;
@@ -2889,6 +2918,7 @@ if(typeof editEmployeeSelect!=="undefined"){
   editDaySelect.onchange=refreshEditShiftOptions;
   editShiftSelect.onchange=fillCustomFromTemplate;
   editHasPause.onchange=()=>{ editPauseRow.style.display=editHasPause.checked?"grid":"none"; };
+  if(typeof editRest!=="undefined") editRest.onchange=toggleEditRest;
   editShiftForm.onsubmit=saveManualShift;
   btnDeleteShift.onclick=deleteManualShift;
   btnCancelEdit.onclick=()=>editShiftDialog.close();
