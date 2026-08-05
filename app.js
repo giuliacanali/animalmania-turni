@@ -73,6 +73,9 @@ const seedEmployees=(AM_SEED && AM_SEED.employees) ? AM_SEED.employees : default
 
 let stores=JSON.parse(localStorage.getItem("am134_stores")||"null") || seedClone(seedStores);
 let employees=JSON.parse(localStorage.getItem("am134_employees")||"null") || seedClone(seedEmployees);
+// Giorni di festività (date ISO "YYYY-MM-DD") in cui TUTTI i negozi sono chiusi.
+// Ogni elemento: {date:"2026-08-15", name:"Ferragosto"}.
+let holidays=JSON.parse(localStorage.getItem("am134_holidays")||"null") || (AM_SEED && AM_SEED.holidays) || [];
 normalizeLegacyEmployees();
 function loadSchedules(){
   const stored=JSON.parse(localStorage.getItem("am134_schedules")||"null");
@@ -96,6 +99,7 @@ function saveData(){
     localStorage.setItem("am134_stores",JSON.stringify(stores));
     localStorage.setItem("am134_employees",JSON.stringify(employees));
     localStorage.setItem("am134_schedules",JSON.stringify(schedules));
+    localStorage.setItem("am134_holidays",JSON.stringify(holidays));
     localStorage.setItem("am134_week",currentWeekKey);
   }catch(err){
     showNotice("ATTENZIONE: le modifiche non sono state salvate sul dispositivo (navigazione privata, spazio esaurito o impostazioni del browser). Chiudendo o ricaricando la pagina andranno perse.","warn",8000);
@@ -244,6 +248,35 @@ function dateForDay(day){
   if(i<0) return null;
   return isoDate(dayDatesOf(currentWeekKey)[i]);
 }
+// Festività: una data in cui uno o più negozi sono chiusi. Ogni voce:
+// {date:"YYYY-MM-DD", name:"...", storeIds:[...]} = i negozi chiusi quel giorno.
+// Non è più per forza globale: negozi diversi possono chiudere in giorni diversi.
+function storeClosedOnDay(storeId,day){
+  const iso=dateForDay(day); if(!iso) return null;
+  return holidays.find(h=>h.date===iso && (h.storeIds||[]).includes(storeId)) || null;
+}
+// Un negozio è "aperto" quel giorno se è tra i suoi giorni di apertura E non è
+// chiuso per festività. Usato ovunque al posto di store.openDays.includes(day).
+function storeOpenOnDay(store,day){ return store.openDays.includes(day) && !storeClosedOnDay(store.id,day); }
+// Negozi in cui il dipendente può lavorare (solo il principale se turno fisso).
+function employeeStores(e){
+  const ids = e.fixedShifts ? [e.primaryStoreId] : [e.primaryStoreId,...(e.secondaryStoreIds||[])];
+  return ids.filter(Boolean).map(id=>stores.find(s=>s.id===id)).filter(Boolean);
+}
+// Vero se quel giorno TUTTI i negozi del dipendente (che sarebbero aperti quel
+// giorno della settimana) sono chiusi per festività: allora non può lavorare e
+// le sue ore si riducono. Se ne ha almeno uno aperto, può essere schedulato lì.
+function employeeClosedByHolidayOnDay(e,day){
+  const relevant=employeeStores(e).filter(s=>s.openDays.includes(day));
+  if(!relevant.length) return false;
+  return relevant.every(s=>storeClosedOnDay(s.id,day));
+}
+// Nome festività da mostrare al dipendente quel giorno (se è chiuso).
+function employeeHolidayNameOnDay(e,day){
+  const s=employeeStores(e).find(s=>storeClosedOnDay(s.id,day));
+  const h=s&&storeClosedOnDay(s.id,day);
+  return h?h.name:"";
+}
 // Assenza a giornata intera (ferie/malattia) che copre quella data.
 function fullDayLeaveOn(e, iso){
   return leavesOf(e).find(l=>(l.type==="ferie"||l.type==="malattia") && iso>=l.start && iso<=(l.end||l.start)) || null;
@@ -269,6 +302,7 @@ function typicalDailyHours(e){
 function leaveHoursThisWeek(e){
   let h=0;
   genDays.forEach(day=>{
+    if(employeeClosedByHolidayOnDay(e,day)) return; // festività: gestita da holidayHoursThisWeek
     const iso=dateForDay(day);
     if(!iso) return;
     if(fullDayLeaveOn(e,iso)){ h+=typicalDailyHours(e); return; }
@@ -277,10 +311,30 @@ function leaveHoursThisWeek(e){
   });
   return h;
 }
-// Target ore della settimana attiva: ore contrattuali meno le assenze, così
-// chi è in ferie non si vede stipare le ore nei giorni rimasti.
+// Ore da scalare per le festività: un giorno festivo che il dipendente avrebbe
+// normalmente lavorato (non domenica, non il suo riposo) vale le ore tipiche.
+// Il negozio è chiuso e pagato: non va recuperato sugli altri giorni.
+function holidayHoursThisWeek(e){
+  let h=0;
+  genDays.forEach(day=>{
+    if(!employeeClosedByHolidayOnDay(e,day)) return; // ridotto solo se TUTTI i suoi negozi chiusi
+    if(e.rest && e.rest===day) return; // già di riposo: nessuna riduzione
+    if(e.fixedShifts){
+      // Turno fisso: scala le ore REALI di quel giorno (0 se quel giorno non lavora).
+      const f=e.fixedSchedule && e.fixedSchedule[day];
+      const sh=f && fixedShiftToShift(f);
+      h += sh ? sh.workedHours : 0;
+      return;
+    }
+    h+=typicalDailyHours(e);
+  });
+  return h;
+}
+// Target ore della settimana attiva: ore contrattuali meno assenze e festività,
+// così chi è in ferie o ha un negozio chiuso non si vede stipare le ore nei
+// giorni rimasti.
 function weeklyTarget(e){
-  return Math.max(0, Math.round(maxWeeklyHours(e)-leaveHoursThisWeek(e)));
+  return Math.max(0, Math.round(maxWeeklyHours(e)-leaveHoursThisWeek(e)-holidayHoursThisWeek(e)));
 }
 
 // Totale assenze di un dipendente su TUTTE le sue ferie (per il riepilogo).
@@ -659,13 +713,13 @@ function generateStoreSchedule(storeId){
   applyFixedShiftsForStore(storeId);
 
   shuffledGenDays().forEach(day=>{
-    if(!store.openDays.includes(day)) return;
+    if(!storeOpenOnDay(store,day)) return;
     const special=(store.specialBands||[]).map(b=>({...b,min:Number(b.min||2),base:false}));
     special.forEach(band=>coverBandGeneric(storeId,day,band,true));
   });
 
   shuffledGenDays().forEach(day=>{
-    if(!store.openDays.includes(day)) return;
+    if(!storeOpenOnDay(store,day)) return;
     const baseBands=store.sessions.flatMap(splitSessionIntoSlots);
     baseBands.forEach(band=>coverBandGeneric(storeId,day,band,false));
   });
@@ -698,7 +752,7 @@ function generateAllSchedules(){
 
   shuffle(stores).forEach(st=>{
     shuffledGenDays().forEach(day=>{
-      if(!st.openDays.includes(day)) return;
+      if(!storeOpenOnDay(st,day)) return;
       const special=(st.specialBands||[]).map(b=>({...b,min:Number(b.min||2),base:false}));
       special.forEach(band=>coverBandGeneric(st.id,day,band,true));
     });
@@ -706,7 +760,7 @@ function generateAllSchedules(){
 
   shuffle(stores).forEach(st=>{
     shuffledGenDays().forEach(day=>{
-      if(!st.openDays.includes(day)) return;
+      if(!storeOpenOnDay(st,day)) return;
       const baseBands=st.sessions.flatMap(splitSessionIntoSlots);
       baseBands.forEach(band=>coverBandGeneric(st.id,day,band,false));
     });
@@ -928,8 +982,11 @@ function cell(storeId,e,d){
   const sh=schedule[storeId]?.[e.id]?.[d];
   const lock = sh&&sh.locked ? ` <span class="lock" title="Turno bloccato: la generazione non lo modifica">🔒</span>` : "";
   const lv=leaveOnDay(e,d);
+  const hol=storeClosedOnDay(storeId,d);
   let content;
-  if(isRestMarker(sh)){
+  if(hol){
+    content=`<span class="holiday-cell">Chiuso${hol.name?` · ${hol.name}`:" · festività"}</span>`;
+  }else if(isRestMarker(sh)){
     content=`<span class="muted">Riposo${lock}</span>`;
   }else if(sh){
     content=`<span class="shift${sh.locked?" locked":""}">${sh.time}${lock}</span>${sh.pause && sh.pause!=="No"?`<span class="note">Pausa ${sh.pause}</span>`:""}`;
@@ -969,6 +1026,10 @@ function renderDays(){
   const dates=dayDatesOf(currentWeekKey);
 
   storeDays.innerHTML=days.map((d,i)=>{
+    const hol=storeClosedOnDay(storeId,d);
+    if(hol){
+      return `<div class="day"><h3>${d} ${dates[i].getDate()}</h3><span class="holiday-cell">Chiuso${hol.name?` · ${hol.name}`:" · festività"}</span></div>`;
+    }
     const rows=workers.map(e=>[e,schedule[storeId]?.[e.id]?.[d]])
       .filter(x=>x[1] && !isRestMarker(x[1]))
       .sort((a,b)=>a[1].time.localeCompare(b[1].time))
@@ -1035,9 +1096,13 @@ function renderEmployeeView(){
       .sort((a,b)=>a[1].time.localeCompare(b[1].time));
     const lv=leaveOnDay(e,d);
     const manualRest=stores.some(st=>isRestMarker(schedule[st.id]?.[e.id]?.[d]));
+    const hol=employeeClosedByHolidayOnDay(e,d);
 
     let inner;
-    if(items.length){
+    if(hol && !items.length){
+      const hn=employeeHolidayNameOnDay(e,d);
+      inner=`<span class="holiday-cell">Chiuso${hn?` · ${hn}`:" · festività"}</span>`;
+    }else if(items.length){
       inner=items.map(([st,s])=>`<div class="person"><strong>${st.name}</strong><span>${s.time}</span>${s.pause&&s.pause!=="No"?`<small class="note">Pausa ${s.pause}</small>`:""}</div>`).join("");
       if(lv && lv.type==="permesso") inner+=`<div class="note">Permesso ${lv.from}-${lv.to}</div>`;
     }else if(lv){
@@ -1239,6 +1304,73 @@ function renderStores(){
   }).join("");
 }
 
+// Etichetta leggibile di una data ISO, es. "Sab 15 ago 2026".
+function formatHolidayDate(iso){
+  const [y,m,d]=iso.split("-").map(Number);
+  const dt=new Date(y,m-1,d);
+  const dow=days[(dt.getDay()+6)%7];
+  return `${dow} ${d} ${monthsShort[m-1]} ${y}`;
+}
+// Nomi dei negozi chiusi in una festività (o "tutti i negozi" se li copre tutti).
+function holidayStoreLabel(h){
+  const ids=h.storeIds||[];
+  if(stores.length && ids.length>=stores.length && stores.every(s=>ids.includes(s.id))) return "tutti i negozi";
+  const names=ids.map(id=>stores.find(s=>s.id===id)?.name).filter(Boolean);
+  return names.length?names.join(", "):"nessun negozio";
+}
+function renderHolidays(){
+  // Checkbox dei negozi nel form (dinamici: seguono i negozi esistenti)
+  const checks=document.getElementById("holidayStoreChecks");
+  if(checks) checks.innerHTML=stores.map(s=>`<label><input type="checkbox" name="holidayStore" value="${s.id}"> ${s.name}</label>`).join("");
+  const list=document.getElementById("holidayList");
+  if(!list) return;
+  const sorted=[...holidays].sort((a,b)=>a.date.localeCompare(b.date));
+  list.innerHTML = sorted.length
+    ? sorted.map(h=>`<li><span>${formatHolidayDate(h.date)}${h.name?` — <strong>${h.name}</strong>`:""} <em class="hs-names">(${holidayStoreLabel(h)})</em></span><button class="delete" onclick="removeHoliday('${h.date}')">Rimuovi</button></li>`).join("")
+    : `<li class="muted">Nessuna festività impostata.</li>`;
+}
+// Rimuove i turni (anche manuali/bloccati) dei negozi CHIUSI su quella data:
+// se un negozio è chiuso, quel giorno non deve restare nessun turno lì.
+function pruneShiftsForHoliday(iso,storeIds){
+  const [y,m,d]=iso.split("-").map(Number);
+  const date=new Date(y,m-1,d);
+  const wk=weekKeyOf(date);
+  if(!schedules[wk]) return;
+  const idx=Math.round((date-keyToDate(wk))/86400000);
+  const day=days[idx];
+  if(!day) return;
+  (storeIds||[]).forEach(stId=>{
+    const st=schedules[wk][stId];
+    if(!st) return;
+    for(const eid in st)
+      if(st[eid] && day in st[eid]) st[eid][day]=null;
+  });
+}
+function addHoliday(ev){
+  ev.preventDefault();
+  const date=document.getElementById("holidayDate").value;
+  if(!date){ showNotice("Scegli una data","warn"); return; }
+  const name=document.getElementById("holidayName").value.trim();
+  const allChecked=document.getElementById("holidayAll")?.checked;
+  const storeIds=allChecked
+    ? stores.map(s=>s.id)
+    : [...document.querySelectorAll('input[name="holidayStore"]:checked')].map(x=>x.value);
+  if(!storeIds.length){ showNotice("Seleziona almeno un negozio da chiudere (o 'Tutti')","warn"); return; }
+  const existing=holidays.find(h=>h.date===date);
+  if(existing){ existing.name=name; existing.storeIds=storeIds; }
+  else holidays.push({date,name,storeIds});
+  pruneShiftsForHoliday(date,storeIds);
+  document.getElementById("holidayForm").reset();
+  saveData();
+  renderAll();
+  showNotice(existing?"Festività aggiornata.":"Festività aggiunta: i negozi scelti sono chiusi quel giorno.","ok");
+}
+function removeHoliday(date){
+  holidays=holidays.filter(h=>h.date!==date);
+  saveData();
+  renderAll();
+}
+
 // Riassunto assenze del dipendente nella settimana attiva (per la dashboard).
 // Es. "Ferie", "Permesso (Mer)", "Malattia (Lun, Mar)". Vuoto se non ci sono.
 function leaveSummaryThisWeek(e){
@@ -1283,6 +1415,7 @@ function renderDashboard(){
 // Usato dal calendario riepilogativo in Dashboard.
 function storeDayInfo(storeId,day){
   const store=stores.find(s=>s.id===storeId);
+  if(storeClosedOnDay(storeId,day)) return {state:"holiday",count:0};
   if(!store || !store.openDays.includes(day)) return {state:"closed",count:0};
   const bands=[
     ...(store.specialBands||[]).map(b=>({...b,min:Number(b.min||2),base:false})),
@@ -1307,6 +1440,7 @@ function renderDashboardCalendar(){
     body.innerHTML=stores.map(st=>{
       const cells=days.map(d=>{
         const info=storeDayInfo(st.id,d);
+        if(info.state==="holiday"){ const h=storeClosedOnDay(st.id,d); return `<td class="dc holiday" title="${h&&h.name?h.name:'Festività'} · negozio chiuso">Festa</td>`; }
         if(info.state==="closed") return `<td class="dc closed">—</td>`;
         const mark=info.state==="gap"?` <span class="warnmark">!</span>`:"";
         const title=`${info.count} in turno${info.state==="gap"?" · manca copertura":""}`;
@@ -1338,6 +1472,7 @@ function applyFixedShiftsForStore(storeId){
     schedule[storeId][e.id]=Object.fromEntries(days.map(d=>[d,null]));
     Object.entries(e.fixedSchedule||{}).forEach(([day,f])=>{
       if(day==="Dom")return;
+      if(storeClosedOnDay(storeId,day))return;         // festività: negozio chiuso
       if(fullDayLeaveOnDay(e,day))return;              // ferie/malattia: niente turno
       const sh=fixedShiftToShift(f);
       if(sh && !shiftClearsPartialLeave(e,day,sh))return; // permesso: turno che si sovrappone
@@ -1551,7 +1686,7 @@ function flexBestOption(storeId,store,e,day,hours){
 // quella distribuzione, mettendo le giornate da 8h dove servono di più alla
 // copertura. I turni bloccati a mano restano intoccati.
 function applyFlexibleDistribution(storeId,store,e){
-  const avail=genDays.filter(d=> store.openDays.includes(d) && canWorkDay(e,d) && !hasShiftElsewhere(storeId,e.id,d));
+  const avail=genDays.filter(d=> storeOpenOnDay(store,d) && canWorkDay(e,d) && !hasShiftElsewhere(storeId,e.id,d));
   const freeDays=avail.filter(d=> !schedule[storeId]?.[e.id]?.[d]?.locked);
   if(!freeDays.length) return;
 
@@ -1622,7 +1757,7 @@ function findBestHourCompletion(storeId,store,e){
   const candidates=[];
 
   genDays.forEach(day=>{
-    if(!store.openDays.includes(day)) return;
+    if(!storeOpenOnDay(store,day)) return;
     if(!canWorkDay(e,day)) return;
     if(schedule[storeId]?.[e.id]?.[day]) return;
 
@@ -1733,7 +1868,7 @@ function findBestHourCompletionAcrossStores(e){
 
   eligibleStoresOrdered(e).forEach(({store,rank:storeRank})=>{
     genDays.forEach(day=>{
-      if(!store.openDays.includes(day)) return;
+      if(!storeOpenOnDay(store,day)) return;
       if(!canWorkDay(e,day)) return;
       if(schedule[store.id]?.[e.id]?.[day]) return;
 
@@ -1828,7 +1963,7 @@ function reduceEmployeeHoursGlobal(e){
 function repairAllCoverageForStore(storeId){
   const store=stores.find(s=>s.id===storeId);
   shuffledGenDays().forEach(day=>{
-    if(!store.openDays.includes(day)) return;
+    if(!storeOpenOnDay(store,day)) return;
     const bands=[
       ...(store.specialBands||[]).map(b=>({...b,min:Number(b.min||2),base:false})),
       ...store.sessions.flatMap(splitSessionIntoSlots)
@@ -1857,7 +1992,7 @@ function totalUncoveredMinutesForDay(storeId,day){
 function minimizeResidualGapsForStore(storeId){
   const store=stores.find(s=>s.id===storeId);
   genDays.forEach(day=>{
-    if(!store.openDays.includes(day)) return;
+    if(!storeOpenOnDay(store,day)) return;
 
     let guard=0;
     let improved=true;
@@ -1903,7 +2038,7 @@ function minimizeResidualGapsForStore(storeId){
 function optimizePausePositionsForStore(storeId){
   const store=stores.find(s=>s.id===storeId);
   genDays.forEach(day=>{
-    if(!store.openDays.includes(day)) return;
+    if(!storeOpenOnDay(store,day)) return;
 
     let improved=true;
     let guard=0;
@@ -1999,7 +2134,7 @@ function alerts(){
     });
 
     days.forEach(d=>{
-      if(!st.openDays.includes(d)) return;
+      if(!storeOpenOnDay(st,d)) return;
 
       // Fasce speciali: controllate esattamente. Include la domenica se il negozio
       // è segnato come aperto: non generiamo turni automatici quel giorno, ma
@@ -2333,7 +2468,8 @@ function saveManualShift(event){
   // nulla e il dialog resta aperto.
   if(option){
     let err=null;
-    if(!isShiftInsideStore(option,store)) err="gli orari sono fuori dall'apertura del negozio.";
+    if(storeClosedOnDay(storeId,day)) err="il negozio è chiuso per festività quel giorno.";
+    else if(!isShiftInsideStore(option,store)) err="gli orari sono fuori dall'apertura del negozio.";
     else if(employee.rest===day) err="è il giorno di riposo del dipendente.";
     else if(fullDayLeaveOnDay(employee,day)) err=`il dipendente è in ${leaveLabels[fullDayLeaveOnDay(employee,day).type]} quel giorno.`;
     else if(!shiftClearsPartialLeave(employee,day,option)){ const p=partialLeaveOnDay(employee,day); err=`si sovrappone al permesso ${p.from}-${p.to}.`; }
@@ -2501,7 +2637,7 @@ function exportWeekPng(){
 
 function exportBackup(){
   saveData();
-  const data={stores,employees,schedules,week:currentWeekKey,exportedAt:new Date().toISOString()};
+  const data={stores,employees,schedules,holidays,week:currentWeekKey,exportedAt:new Date().toISOString()};
   const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a");
@@ -2536,6 +2672,7 @@ function importBackupFile(file){
 
     stores=data.stores;
     employees=data.employees;
+    holidays=Array.isArray(data.holidays)?data.holidays:[];
     normalizeLegacyEmployees();
 
     if(hasSchedules){
@@ -2701,6 +2838,7 @@ async function loadServerData(){
       lastDataAt=d.data.updatedAt||0;
       stores=d.data.stores;
       employees=d.data.employees||[];
+      holidays=Array.isArray(d.data.holidays)?d.data.holidays:[];
       normalizeLegacyEmployees();
       schedules=d.data.schedules||{};
       // Allinea la settimana attiva a quella su cui lavora l'admin, così tutti
@@ -2734,7 +2872,7 @@ async function pushServerData(){
   if(!dataBackend || currentRole()!=="admin") return;
   try{
     const r=await fetch("/api/data",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({stores,employees,schedules,week:currentWeekKey})});
+      body:JSON.stringify({stores,employees,schedules,holidays,week:currentWeekKey})});
     if(r.ok){ const d=await r.json(); if(d.updatedAt) lastDataAt=d.updatedAt; }
   }catch(e){}
 }
@@ -2834,6 +2972,7 @@ function renderAll(){
   renderEmployeeView();
   renderEmployees();
   renderStores();
+  renderHolidays();
   renderProfiles();
   renderLeaves();
   renderAccessi();
@@ -2906,6 +3045,13 @@ if(typeof empProfile!=="undefined") empProfile.onchange=applySelectedProfile;
 employeeCancelBtn.onclick=resetEmployeeForm;
 storeCancelBtn.onclick=resetStoreForm;
 btnExportBackup.onclick=exportBackup;
+if(typeof holidayForm!=="undefined" && holidayForm){
+  holidayForm.onsubmit=addHoliday;
+  const allCb=document.getElementById("holidayAll");
+  if(allCb) allCb.onchange=()=>{
+    document.querySelectorAll('input[name="holidayStore"]').forEach(cb=>{ cb.checked=allCb.checked; cb.disabled=allCb.checked; });
+  };
+}
 btnImportBackup.onclick=()=>importBackupInput.click();
 importBackupInput.onchange=()=>{
   const file=importBackupInput.files[0];

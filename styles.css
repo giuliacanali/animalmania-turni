@@ -371,3 +371,22 @@ body.locked { overflow: hidden; }
 /* V38 mostra il negozio dove lavora quel giorno (griglia turni) */
 .elsewhere{display:inline-block;color:var(--muted);font-weight:800;font-size:12px;line-height:1.2;}
 .elsewhere small{display:block;font-weight:600;font-size:11px;color:#aaa;margin-top:1px;}
+
+/* V42 festività: giorni in cui tutti i negozi sono chiusi */
+.holiday-cell{display:inline-block;color:var(--danger);font-weight:800;font-size:12px;line-height:1.2;}
+td.dc.holiday{background:#fde8e8;color:var(--danger);font-weight:800;font-size:11px;}
+.inline-form{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;}
+.inline-form label{display:flex;flex-direction:column;gap:4px;font-size:13px;font-weight:700;}
+#holidayPanel{margin-top:16px;}
+.holiday-list{list-style:none;padding:0;margin:12px 0 0;display:flex;flex-direction:column;gap:6px;}
+.holiday-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 12px;background:var(--soft);border-radius:8px;}
+.holiday-list li.muted{color:var(--muted);background:transparent;padding:4px 0;}
+.holiday-list .delete{flex:0 0 auto;}
+
+/* V43 festività per-negozio: selezione negozi chiusi */
+.holiday-stores{display:flex;flex-direction:column;gap:8px;width:100%;}
+.hs-label{font-size:13px;font-weight:700;color:var(--muted);}
+.holiday-stores .checks{display:flex;flex-wrap:wrap;gap:8px 16px;}
+.holiday-stores .hs-all,.holiday-stores .checks label{display:inline-flex;align-items:center;gap:6px;font-weight:700;color:var(--text);}
+.holiday-stores input[type="checkbox"]{width:auto;margin:0;}
+.hs-names{color:var(--muted);font-style:normal;font-size:12px;}

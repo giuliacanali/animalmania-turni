@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Animalmania Turni</title>
-  <link rel="stylesheet" href="styles.css?v=41">
+  <link rel="stylesheet" href="styles.css?v=43">
 </head>
 <body class="locked">
   <div id="loginGate">
@@ -276,6 +276,22 @@
 
         <div class="storecards" id="storeCards"></div>
       </div>
+
+      <article class="panel" id="holidayPanel">
+        <h2>Giorni di festività (negozi chiusi)</h2>
+        <p>Aggiungi le date in cui uno o più negozi restano chiusi (es. Ferragosto per tutti, o il santo patrono per una sola sede). In quei giorni la generazione non assegna turni in quei negozi e la griglia mostra “Chiuso”.</p>
+        <form id="holidayForm" class="form inline-form">
+          <label>Data<input type="date" id="holidayDate" required></label>
+          <label>Nome (facoltativo)<input id="holidayName" placeholder="Es. Ferragosto"></label>
+          <div class="holiday-stores">
+            <span class="hs-label">Negozi chiusi:</span>
+            <label class="hs-all"><input type="checkbox" id="holidayAll"> Tutti i negozi</label>
+            <div id="holidayStoreChecks" class="checks"></div>
+          </div>
+          <button class="primary" type="submit">Aggiungi festività</button>
+        </form>
+        <ul id="holidayList" class="holiday-list"></ul>
+      </article>
     </section>
 
     <section id="accessi" class="view">
@@ -358,6 +374,6 @@
 
   <script src="auth-config.js?v=27"></script>
   <script src="seed-data.js?v=27"></script>
-  <script src="app.js?v=41"></script>
+  <script src="app.js?v=43"></script>
 </body>
 </html>

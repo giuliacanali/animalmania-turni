@@ -56,7 +56,7 @@ module.exports = async (req, res) => {
         return;
       }
       const updatedAt = Date.now();
-      const payload = JSON.stringify({ stores: b.stores, employees: b.employees, schedules: b.schedules || {}, week: b.week || null, updatedAt });
+      const payload = JSON.stringify({ stores: b.stores, employees: b.employees, schedules: b.schedules || {}, holidays: Array.isArray(b.holidays) ? b.holidays : [], week: b.week || null, updatedAt });
       await kv(["SET", K_DATA, payload]);
       res.status(200).json({ ok: true, updatedAt });
       return;
