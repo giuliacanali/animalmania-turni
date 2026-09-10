@@ -1044,9 +1044,20 @@ function renderDays(){
   });
 }
 
+// Colleghi in turno nello stesso negozio quel giorno (escluso il dipendente
+// stesso), ordinati per orario: così sa con chi lavorerà.
+function colleaguesInStoreOnDay(storeId,day,exceptId){
+  return employees
+    .filter(c=>c.id!==exceptId)
+    .map(c=>[c,schedule[storeId]?.[c.id]?.[day]])
+    .filter(x=>x[1] && !isRestMarker(x[1]))
+    .sort((a,b)=>a[1].time.localeCompare(b[1].time));
+}
+
 // Vista "Il mio turno": il dipendente sceglie il suo nome e vede la propria
 // settimana con TUTTI i turni, uniti da tutti i negozi in cui lavora (chi sta
-// su più PDV li trova in un'unica interfaccia, con il negozio indicato).
+// su più PDV li trova in un'unica interfaccia, con il negozio indicato), e per
+// ogni giorno i colleghi in turno nello stesso negozio.
 function renderEmployeeView(){
   const sel=document.getElementById("empViewSelect");
   const label=document.getElementById("empViewLabel");
@@ -1103,7 +1114,13 @@ function renderEmployeeView(){
       const hn=employeeHolidayNameOnDay(e,d);
       inner=`<span class="holiday-cell">Chiuso${hn?` · ${hn}`:" · festività"}</span>`;
     }else if(items.length){
-      inner=items.map(([st,s])=>`<div class="person"><strong>${st.name}</strong><span>${s.time}</span>${s.pause&&s.pause!=="No"?`<small class="note">Pausa ${s.pause}</small>`:""}</div>`).join("");
+      inner=items.map(([st,s])=>{
+        const cols=colleaguesInStoreOnDay(st.id,d,e.id);
+        const colHtml = cols.length
+          ? `<div class="colleagues"><span class="col-label">Con te:</span>${cols.map(([c,cs])=>`<div class="col"><span>${c.name}</span><small>${cs.time}</small></div>`).join("")}</div>`
+          : `<div class="colleagues"><span class="col-label solo">Solo tu in negozio</span></div>`;
+        return `<div class="person"><strong>${st.name}</strong><span>${s.time}</span>${s.pause&&s.pause!=="No"?`<small class="note">Pausa ${s.pause}</small>`:""}${colHtml}</div>`;
+      }).join("");
       if(lv && lv.type==="permesso") inner+=`<div class="note">Permesso ${lv.from}-${lv.to}</div>`;
     }else if(lv){
       inner=leaveBadge(lv);

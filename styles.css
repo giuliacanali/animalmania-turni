@@ -390,3 +390,10 @@ td.dc.holiday{background:#fde8e8;color:var(--danger);font-weight:800;font-size:1
 .holiday-stores .hs-all,.holiday-stores .checks label{display:inline-flex;align-items:center;gap:6px;font-weight:700;color:var(--text);}
 .holiday-stores input[type="checkbox"]{width:auto;margin:0;}
 .hs-names{color:var(--muted);font-style:normal;font-size:12px;}
+
+/* V44 "Il mio turno": colleghi in negozio quel giorno */
+.colleagues{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);}
+.col-label{display:block;font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin-bottom:4px;}
+.col-label.solo{text-transform:none;letter-spacing:0;font-weight:700;color:#aaa;}
+.col{display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:2px 0;}
+.col small{color:var(--muted);font-weight:700;}
