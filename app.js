@@ -2286,8 +2286,11 @@ function addEmployee(e){
   const idx=employees.findIndex(x=>x.id===id);
   if(idx>=0){
     employees[idx]=employeeData;
-    stores.forEach(st=>{ if(schedule[st.id]?.[id]) schedule[st.id][id]=Object.fromEntries(days.map(d=>[d,null])); });
-    showNotice("Dipendente modificato. Rigenera la proposta.","warn");
+    // NON si cancellano più i turni già inseriti (prima si azzerava l'intera
+    // settimana attiva, perdendo anche settimane già pianificate/in corso).
+    // I turni restano; se serve, l'utente rigenera. Per un riposo eccezionale
+    // di una sola settimana si usa il "Riposo" nell'editor della vista Turni.
+    showNotice("Dipendente modificato. I turni già inseriti restano invariati: se hai cambiato profilo, tipo turno o negozi, rigenera la proposta.","warn",7000);
   }else{
     employees.push(employeeData);
   }
