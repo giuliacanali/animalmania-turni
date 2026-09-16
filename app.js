@@ -93,6 +93,22 @@ if(!schedules[currentWeekKey]) schedules[currentWeekKey]=emptySchedule();
 let schedule=schedules[currentWeekKey];
 let suppressAutoRender = false;
 
+// Settimane PUBBLICATE: solo queste sono visibili ai dipendenti ("Il mio turno").
+// Una settimana in bozza resta nascosta finché l'admin non la pubblica, così i
+// ragazzi non vedono i turni mentre li stai ancora sistemando.
+// Migrazione: se non c'è ancora l'elenco, le settimane già esistenti sono
+// considerate pubblicate (nulla sparisce a chi già usa l'app).
+let published=JSON.parse(localStorage.getItem("am134_published")||"null");
+if(!Array.isArray(published)) published=Object.keys(schedules);
+function isWeekPublished(wk){ return Array.isArray(published) && published.includes(wk); }
+function setWeekPublished(wk,val){
+  published=(published||[]).filter(k=>k!==wk);
+  if(val) published.push(wk);
+  saveData();
+  renderAll();
+  showNotice(val?"Settimana pubblicata: ora è visibile ai dipendenti.":"Settimana nascosta ai dipendenti (bozza).","ok");
+}
+
 function saveData(){
   try{
     schedules[currentWeekKey]=schedule;
@@ -100,6 +116,7 @@ function saveData(){
     localStorage.setItem("am134_employees",JSON.stringify(employees));
     localStorage.setItem("am134_schedules",JSON.stringify(schedules));
     localStorage.setItem("am134_holidays",JSON.stringify(holidays));
+    localStorage.setItem("am134_published",JSON.stringify(published));
     localStorage.setItem("am134_week",currentWeekKey);
   }catch(err){
     showNotice("ATTENZIONE: le modifiche non sono state salvate sul dispositivo (navigazione privata, spazio esaurito o impostazioni del browser). Chiudendo o ricaricando la pagina andranno perse.","warn",8000);
@@ -953,6 +970,17 @@ function renderWeekHeader(){
   if(label) label.textContent=formatWeekRange(currentWeekKey);
   const jump=document.getElementById("weekJump");
   if(jump) jump.value=currentWeekKey;
+  const pub=isWeekPublished(currentWeekKey);
+  const badge=document.getElementById("publishBadge");
+  if(badge){
+    badge.textContent = pub ? "Pubblicata · visibile ai dipendenti" : "Bozza · nascosta ai dipendenti";
+    badge.className = "publish-badge "+(pub?"pub":"draft");
+  }
+  const btn=document.getElementById("btnPublishWeek");
+  if(btn){
+    btn.textContent = pub ? "Nascondi ai dipendenti" : "Pubblica per i dipendenti";
+    btn.className = pub ? "" : "primary";
+  }
 }
 
 function renderWeek(){
@@ -1074,6 +1102,14 @@ function renderEmployeeView(){
   if(!e){
     if(summary) summary.innerHTML="";
     daysBox.innerHTML=`<p class="muted" style="padding:8px">Seleziona il tuo nome per vedere i tuoi turni della settimana.</p>`;
+    return;
+  }
+
+  // Settimana in bozza: i dipendenti non la vedono finché l'admin non pubblica.
+  // L'admin invece la vede sempre (per prepararla e controllarla).
+  if(typeof currentRole==="function" && currentRole()!=="admin" && !isWeekPublished(currentWeekKey)){
+    if(summary) summary.innerHTML=`<div class="emp-summary-head"><strong>${e.name}</strong></div>`;
+    daysBox.innerHTML=`<p class="muted" style="padding:12px">I turni di questa settimana non sono ancora stati pubblicati. Controlla più tardi.</p>`;
     return;
   }
 
@@ -2488,9 +2524,11 @@ function saveManualShift(event){
   // nulla e il dialog resta aperto.
   if(option){
     let err=null;
+    // NB: il giorno di riposo abituale (employee.rest) NON blocca più la modifica
+    // manuale: così si può spostare il riposo per una singola settimana (es.
+    // mettere un turno nel giorno di riposo e il "Riposo" in un altro giorno).
     if(storeClosedOnDay(storeId,day)) err="il negozio è chiuso per festività quel giorno.";
     else if(!isShiftInsideStore(option,store)) err="gli orari sono fuori dall'apertura del negozio.";
-    else if(employee.rest===day) err="è il giorno di riposo del dipendente.";
     else if(fullDayLeaveOnDay(employee,day)) err=`il dipendente è in ${leaveLabels[fullDayLeaveOnDay(employee,day).type]} quel giorno.`;
     else if(!shiftClearsPartialLeave(employee,day,option)){ const p=partialLeaveOnDay(employee,day); err=`si sovrappone al permesso ${p.from}-${p.to}.`; }
     else if(newEmployeeId!==oldEmployeeId && hasShiftElsewhere(storeId,newEmployeeId,day)) err="il dipendente è già in turno in un altro negozio quel giorno.";
@@ -2657,7 +2695,7 @@ function exportWeekPng(){
 
 function exportBackup(){
   saveData();
-  const data={stores,employees,schedules,holidays,week:currentWeekKey,exportedAt:new Date().toISOString()};
+  const data={stores,employees,schedules,holidays,published,week:currentWeekKey,exportedAt:new Date().toISOString()};
   const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a");
@@ -2693,6 +2731,7 @@ function importBackupFile(file){
     stores=data.stores;
     employees=data.employees;
     holidays=Array.isArray(data.holidays)?data.holidays:[];
+    published=Array.isArray(data.published)?data.published:Object.keys(data.schedules||{});
     normalizeLegacyEmployees();
 
     if(hasSchedules){
@@ -2859,6 +2898,7 @@ async function loadServerData(){
       stores=d.data.stores;
       employees=d.data.employees||[];
       holidays=Array.isArray(d.data.holidays)?d.data.holidays:[];
+      published=Array.isArray(d.data.published)?d.data.published:Object.keys(d.data.schedules||{});
       normalizeLegacyEmployees();
       schedules=d.data.schedules||{};
       // Allinea la settimana attiva a quella su cui lavora l'admin, così tutti
@@ -2892,7 +2932,7 @@ async function pushServerData(){
   if(!dataBackend || currentRole()!=="admin") return;
   try{
     const r=await fetch("/api/data",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({stores,employees,schedules,holidays,week:currentWeekKey})});
+      body:JSON.stringify({stores,employees,schedules,holidays,published,week:currentWeekKey})});
     if(r.ok){ const d=await r.json(); if(d.updatedAt) lastDataAt=d.updatedAt; }
   }catch(e){}
 }
@@ -3033,6 +3073,7 @@ btnPrevWeek.onclick=()=>setWeek(addWeeks(currentWeekKey,-1));
 btnNextWeek.onclick=()=>setWeek(addWeeks(currentWeekKey,1));
 btnToday.onclick=()=>setWeek(weekKeyOf(new Date()));
 btnExportPng.onclick=exportWeekPng;
+if(typeof btnPublishWeek!=="undefined" && btnPublishWeek) btnPublishWeek.onclick=()=>setWeekPublished(currentWeekKey, !isWeekPublished(currentWeekKey));
 
 // Salto rapido a una settimana scegliendo una data qualsiasi (va al lunedì
 // di quella settimana). Presente sia in Turni sia in Dashboard.

@@ -45,7 +45,18 @@ module.exports = async (req, res) => {
   try {
     if (req.method === "GET") {
       const raw = await kv(["GET", K_DATA]);
-      res.status(200).json({ backend: true, data: raw ? JSON.parse(raw) : null });
+      let data = raw ? JSON.parse(raw) : null;
+      // Ai dipendenti mostriamo SOLO le settimane pubblicate: le bozze non
+      // vengono nemmeno inviate, così non possono vederle in anticipo.
+      if (data && role !== "admin") {
+        const pub = Array.isArray(data.published) ? data.published : Object.keys(data.schedules || {});
+        const filtered = {};
+        for (const wk of Object.keys(data.schedules || {})) {
+          if (pub.includes(wk)) filtered[wk] = data.schedules[wk];
+        }
+        data = { ...data, schedules: filtered, published: pub };
+      }
+      res.status(200).json({ backend: true, data });
       return;
     }
     if (req.method === "POST") {
@@ -56,7 +67,7 @@ module.exports = async (req, res) => {
         return;
       }
       const updatedAt = Date.now();
-      const payload = JSON.stringify({ stores: b.stores, employees: b.employees, schedules: b.schedules || {}, holidays: Array.isArray(b.holidays) ? b.holidays : [], week: b.week || null, updatedAt });
+      const payload = JSON.stringify({ stores: b.stores, employees: b.employees, schedules: b.schedules || {}, holidays: Array.isArray(b.holidays) ? b.holidays : [], published: Array.isArray(b.published) ? b.published : [], week: b.week || null, updatedAt });
       await kv(["SET", K_DATA, payload]);
       res.status(200).json({ ok: true, updatedAt });
       return;

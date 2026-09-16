@@ -397,3 +397,9 @@ td.dc.holiday{background:#fde8e8;color:var(--danger);font-weight:800;font-size:1
 .col-label.solo{text-transform:none;letter-spacing:0;font-weight:700;color:#aaa;}
 .col{display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:2px 0;}
 .col small{color:var(--muted);font-weight:700;}
+
+/* V47 pubblicazione settimana (bozza/pubblicata) */
+.publish-badge{display:inline-block;padding:6px 10px;border-radius:999px;font-weight:800;font-size:12px;}
+.publish-badge.draft{background:#fff8e8;color:var(--warn);}
+.publish-badge.pub{background:#edf8ef;color:var(--ok);}
+#btnPublishWeek{white-space:nowrap;}
