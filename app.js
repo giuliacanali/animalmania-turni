@@ -105,6 +105,9 @@ function setWeekPublished(wk,val){
   published=(published||[]).filter(k=>k!==wk);
   if(val) published.push(wk);
   saveData();
+  // Invia subito al server (senza aspettare il debounce): così i dipendenti
+  // ricevono la pubblicazione il prima possibile.
+  if(typeof flushServerData==="function") flushServerData();
   renderAll();
   showNotice(val?"Settimana pubblicata: ora è visibile ai dipendenti.":"Settimana nascosta ai dipendenti (bozza).","ok");
 }
@@ -2946,13 +2949,22 @@ function flushServerData(){
     pushServerData();
   }
 }
-document.addEventListener("visibilitychange",()=>{ if(document.hidden) flushServerData(); });
+// Ricarica subito i dati condivisi quando un dipendente riapre/torna sull'app,
+// così appena pubblichi vedono i turni senza aspettare il prossimo giro.
+function refreshIfEmployee(){
+  if(dataBackend && currentRole() && currentRole()!=="admin") loadServerData();
+}
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden) flushServerData();
+  else refreshIfEmployee(); // tornato in primo piano: aggiorna subito
+});
+window.addEventListener("focus", refreshIfEmployee);
 window.addEventListener("pagehide", flushServerData);
 
 function startDataPolling(){
-  setInterval(()=>{
-    if(dataBackend && currentRole() && currentRole()!=="admin") loadServerData();
-  }, 30000);
+  // Polling frequente per i dipendenti: dopo una pubblicazione vedono i turni
+  // entro pochi secondi anche senza toccare nulla.
+  setInterval(refreshIfEmployee, 10000);
 }
 
 
