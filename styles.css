@@ -403,3 +403,9 @@ td.dc.holiday{background:#fde8e8;color:var(--danger);font-weight:800;font-size:1
 .publish-badge.draft{background:#fff8e8;color:var(--warn);}
 .publish-badge.pub{background:#edf8ef;color:var(--ok);}
 #btnPublishWeek{white-space:nowrap;}
+
+/* V49 storico versioni */
+.versions-list{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px;max-height:50vh;overflow:auto;}
+.versions-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 12px;background:var(--soft);border-radius:10px;}
+.versions-list li.muted{background:transparent;color:var(--muted);}
+#btnVersions{white-space:nowrap;}

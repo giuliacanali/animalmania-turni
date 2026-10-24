@@ -2961,6 +2961,45 @@ document.addEventListener("visibilitychange",()=>{
 window.addEventListener("focus", refreshIfEmployee);
 window.addEventListener("pagehide", flushServerData);
 
+// --- Storico versioni: elenco e ripristino (solo admin, richiede backend) ---
+async function openVersions(){
+  if(!dataBackend){ showNotice("Lo storico versioni è disponibile solo quando il backend condiviso è attivo.","warn"); return; }
+  const box=document.getElementById("versionsList");
+  if(box) box.innerHTML=`<li class="muted">Carico…</li>`;
+  try{
+    const r=await fetch("/api/data?hist=list",{headers:{Accept:"application/json"}});
+    const d=await r.json();
+    const list=(d.history||[]).slice().sort((a,b)=>b-a);
+    if(box) box.innerHTML = list.length
+      ? list.map(ts=>`<li><span>${new Date(Number(ts)).toLocaleString("it-IT",{weekday:"short",day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"})}</span><button type="button" class="primary" onclick="restoreVersion(${ts})">Ripristina</button></li>`).join("")
+      : `<li class="muted">Ancora nessuna versione salvata. Da ora in poi ogni modifica importante verrà conservata.</li>`;
+    document.getElementById("versionsDialog").showModal();
+  }catch(e){ showNotice("Impossibile leggere lo storico versioni.","warn"); }
+}
+async function restoreVersion(ts){
+  if(!confirm("Ripristinare questa versione? I turni attuali verranno sostituiti con quelli di quel momento.\n(La versione attuale resta comunque nello storico, quindi è reversibile.)")) return;
+  try{
+    const r=await fetch("/api/data?hist="+encodeURIComponent(ts),{headers:{Accept:"application/json"}});
+    const d=await r.json();
+    const x=d&&d.data;
+    if(!x||!Array.isArray(x.stores)){ showNotice("Versione non trovata.","warn"); return; }
+    stores=x.stores;
+    employees=x.employees||[];
+    holidays=Array.isArray(x.holidays)?x.holidays:[];
+    normalizeLegacyEmployees();
+    schedules=x.schedules||{};
+    published=Array.isArray(x.published)?x.published:Object.keys(schedules);
+    if(x.week && schedules[x.week]) currentWeekKey=x.week;
+    if(!schedules[currentWeekKey]) schedules[currentWeekKey]=emptySchedule();
+    schedule=schedules[currentWeekKey];
+    ensureSchedule();
+    saveData(); // diventa la versione corrente (e archivia quella di adesso)
+    const dlg=document.getElementById("versionsDialog"); if(dlg) dlg.close();
+    renderAll();
+    showNotice("Versione ripristinata.","ok");
+  }catch(e){ showNotice("Errore nel ripristino della versione.","warn"); }
+}
+
 function startDataPolling(){
   // Polling frequente per i dipendenti: dopo una pubblicazione vedono i turni
   // entro pochi secondi anche senza toccare nulla.
@@ -3086,6 +3125,8 @@ btnNextWeek.onclick=()=>setWeek(addWeeks(currentWeekKey,1));
 btnToday.onclick=()=>setWeek(weekKeyOf(new Date()));
 btnExportPng.onclick=exportWeekPng;
 if(typeof btnPublishWeek!=="undefined" && btnPublishWeek) btnPublishWeek.onclick=()=>setWeekPublished(currentWeekKey, !isWeekPublished(currentWeekKey));
+if(typeof btnVersions!=="undefined" && btnVersions) btnVersions.onclick=openVersions;
+if(typeof versionsClose!=="undefined" && versionsClose) versionsClose.onclick=()=>document.getElementById("versionsDialog").close();
 
 // Salto rapido a una settimana scegliendo una data qualsiasi (va al lunedì
 // di quella settimana). Presente sia in Turni sia in Dashboard.

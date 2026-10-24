@@ -8,6 +8,10 @@ const KV_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL
 const KV_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || "";
 const SECRET = process.env.SESSION_SECRET || "";
 const K_DATA = "am_data";
+const K_IX = "am_data_hist_ix";          // indice (piccolo): elenco timestamp versioni
+const SNAP = (ts) => "am_data_hist:" + ts; // una chiave per versione
+const HIST_MAX = 20;                       // quante versioni conservare
+const HIST_SPACING_MS = 10 * 60 * 1000;    // distanza minima tra due versioni salvate
 
 function ready() { return KV_URL && KV_TOKEN && SECRET; }
 
@@ -42,8 +46,26 @@ module.exports = async (req, res) => {
   const role = verifyToken(cookie(req, "am_session"));
   if (!role) { res.status(401).json({ error: "unauthorized" }); return; }
 
+  // Eventuale parametro ?hist=... (lista versioni o una versione specifica)
+  let hist = null;
+  try { hist = new URL(req.url, "http://x").searchParams.get("hist"); } catch (e) {}
+
   try {
     if (req.method === "GET") {
+      // --- Storico versioni (solo admin) ---
+      if (hist !== null) {
+        if (role !== "admin") { res.status(403).json({ error: "forbidden" }); return; }
+        if (hist === "list") {
+          const ixRaw = await kv(["GET", K_IX]);
+          const ix = ixRaw ? JSON.parse(ixRaw) : [];
+          res.status(200).json({ backend: true, history: ix });
+          return;
+        }
+        const snapRaw = await kv(["GET", SNAP(hist)]);
+        res.status(200).json({ backend: true, data: snapRaw ? JSON.parse(snapRaw) : null });
+        return;
+      }
+
       const raw = await kv(["GET", K_DATA]);
       let data = raw ? JSON.parse(raw) : null;
       // Ai dipendenti mostriamo SOLO le settimane pubblicate: le bozze non
@@ -65,6 +87,25 @@ module.exports = async (req, res) => {
       if (!Array.isArray(b.stores) || !Array.isArray(b.employees)) {
         res.status(400).json({ error: "invalid payload" });
         return;
+      }
+      // Prima di sovrascrivere, archivia la versione PRECEDENTE nello storico,
+      // ma spaziata nel tempo (non a ogni micro-salvataggio) e limitata a HIST_MAX.
+      const prevRaw = await kv(["GET", K_DATA]);
+      if (prevRaw) {
+        try {
+          const prev = JSON.parse(prevRaw);
+          const prevTs = Number(prev.updatedAt) || 0;
+          const ixRaw = await kv(["GET", K_IX]);
+          let ix = ixRaw ? JSON.parse(ixRaw) : [];
+          const newest = ix.length ? Number(ix[0]) : 0;
+          if (prevTs && (!newest || prevTs - newest >= HIST_SPACING_MS)) {
+            await kv(["SET", SNAP(prevTs), prevRaw]);
+            ix.unshift(prevTs);
+            const keep = ix.slice(0, HIST_MAX);
+            for (const old of ix.slice(HIST_MAX)) await kv(["DEL", SNAP(old)]);
+            await kv(["SET", K_IX, JSON.stringify(keep)]);
+          }
+        } catch (e) { /* lo storico non deve mai bloccare il salvataggio */ }
       }
       const updatedAt = Date.now();
       const payload = JSON.stringify({ stores: b.stores, employees: b.employees, schedules: b.schedules || {}, holidays: Array.isArray(b.holidays) ? b.holidays : [], published: Array.isArray(b.published) ? b.published : [], week: b.week || null, updatedAt });

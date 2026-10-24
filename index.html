@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Animalmania Turni</title>
-  <link rel="stylesheet" href="styles.css?v=48">
+  <link rel="stylesheet" href="styles.css?v=49">
 </head>
 <body class="locked">
   <div id="loginGate">
@@ -90,6 +90,7 @@
         <button id="btnExportPng" title="Scarica la settimana come immagine">Esporta PNG</button>
         <span id="publishBadge" class="publish-badge"></span>
         <button id="btnPublishWeek" title="Rendi la settimana visibile o nascosta ai dipendenti"></button>
+        <button id="btnVersions" title="Ripristina una versione precedente dei turni">🕑 Versioni</button>
       </div>
 
       <div class="toolbar">
@@ -374,8 +375,19 @@
     </form>
   </dialog>
 
+  <dialog id="versionsDialog">
+    <div class="dialog-card">
+      <h2>Versioni precedenti</h2>
+      <p>Ogni salvataggio importante viene conservato. Scegli una versione per riportare tutti i turni a com'erano in quel momento. La versione attuale resta comunque recuperabile.</p>
+      <ul id="versionsList" class="versions-list"></ul>
+      <div class="dialog-actions">
+        <button type="button" id="versionsClose">Chiudi</button>
+      </div>
+    </div>
+  </dialog>
+
   <script src="auth-config.js?v=27"></script>
   <script src="seed-data.js?v=27"></script>
-  <script src="app.js?v=48"></script>
+  <script src="app.js?v=49"></script>
 </body>
 </html>
